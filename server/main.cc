@@ -30,6 +30,8 @@ using grpc::StatusCode;
 using ::llamagrpc::LlamaService;
 using ::llamagrpc::DoLoadModelRequest;
 using ::llamagrpc::DoLoadModelResponse;
+using ::llamagrpc::TokenizeRequest;
+using ::llamagrpc::TokenizeResponse;
 
 #include "llama.h"
 
@@ -93,6 +95,10 @@ class LlamaManager {
             }
         }
 
+        llama_context* get_context() {
+            return ctx;
+        }
+
         void load_model(const std::string& model_filename) {
             if (ctx) {
                 throw std::runtime_error("Model already loaded");
@@ -127,9 +133,67 @@ class LlamaManager {
 ABSL_FLAG(uint16_t, port, 50051, "Server port for the service");
 
 class LlamaServiceImpl final : public LlamaService::Service {
-  Status DoLoadModel(ServerContext* context, const DoLoadModelRequest* request, DoLoadModelResponse* reply) override {
-    reply->set_model_ready(false);
-    return Status(StatusCode::UNIMPLEMENTED, "Not implemented yet");
+private:
+    std::unique_ptr<LlamaManager> llama_manager;
+
+public:
+  std::string map_model_filename(const std::string& model_name) {
+    if (model_name == "13B") {
+        return "/home/svk/dalai/llama/models/13B/ggml-model-q4_0.bin";
+    }
+
+    throw std::runtime_error("Unknown model: " + model_name);
+  }
+
+  Status DoLoadModel(ServerContext* context, const ::llamagrpc::DoLoadModelRequest* request, ::llamagrpc::DoLoadModelResponse* reply) override {
+    const std::string mapped_model_filename = map_model_filename(request->model_name());
+
+    LOG(INFO) << "Loading requested model: " << mapped_model_filename;
+
+    llama_manager.reset(new LlamaManager());
+    llama_manager->load_model(mapped_model_filename);
+
+    LOG(INFO) << "Done loading requested model: " << mapped_model_filename;
+
+    reply->set_model_ready(true);
+    return Status::OK;
+  }
+
+  Status Tokenize(ServerContext* context, const ::llamagrpc::TokenizeRequest* request, ::llamagrpc::TokenizeResponse* reply) override {
+    if (!llama_manager) {
+        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    }
+
+    const std::string text = request->text();
+    const std::vector<llama_token> tokens = simple_tokenize(llama_manager->get_context(), text);
+
+    for (llama_token tok : tokens) {
+        const char *token_str = llama_token_to_str(llama_manager->get_context(), tok);
+
+        ::llamagrpc::Token* token_msg = reply->add_token();
+        token_msg->set_token_id(tok);
+        token_msg->set_token_str(token_str);
+    }
+
+    return Status::OK;
+  }
+
+  Status GetVocabulary(ServerContext* context, const ::llamagrpc::GetVocabularyRequest* request, ::llamagrpc::GetVocabularyResponse* reply) override {
+    if (!llama_manager) {
+        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    }
+
+    const int n_vocab = llama_n_vocab(llama_manager->get_context());
+
+    for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+        const char *token_str = llama_token_to_str(llama_manager->get_context(), token_id);
+        ::llamagrpc::Token* token_msg = reply->add_token();
+
+        token_msg->set_token_id(token_id);
+        token_msg->set_token_str(token_str);
+    }
+
+    return Status::OK;
   }
 };
 

@@ -15,7 +15,7 @@ message TokenizeRequest {
 
 message Token {
     uint32 token_id = 1;
-    string token_str = 2;
+    bytes token_str = 2;
 }
 
 message TokenizeResponse {
