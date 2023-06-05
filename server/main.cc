@@ -8,12 +8,14 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <queue>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/log.h"
 #include "absl/log/initialize.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/grpcpp.h>
@@ -118,6 +120,10 @@ class LlamaManager {
             pending_context.push_back(llama_token_bos());
         }
 
+        void add_token(llama_token tok) {
+            pending_context.push_back(tok);
+        }
+
         void compute_logits() {
             for (llama_token tok : pending_context) {
                 if (llama_eval(ctx, &tok, 1, computed_context.size(), number_of_threads) != 0) {
@@ -134,6 +140,7 @@ ABSL_FLAG(uint16_t, port, 50051, "Server port for the service");
 
 class LlamaServiceImpl final : public LlamaService::Service {
 private:
+    absl::Mutex mutex;
     std::unique_ptr<LlamaManager> llama_manager;
 
 public:
@@ -146,6 +153,8 @@ public:
   }
 
   Status DoLoadModel(ServerContext* context, const ::llamagrpc::DoLoadModelRequest* request, ::llamagrpc::DoLoadModelResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
     const std::string mapped_model_filename = map_model_filename(request->model_name());
 
     LOG(INFO) << "Loading requested model: " << mapped_model_filename;
@@ -160,6 +169,8 @@ public:
   }
 
   Status Tokenize(ServerContext* context, const ::llamagrpc::TokenizeRequest* request, ::llamagrpc::TokenizeResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
     if (!llama_manager) {
         return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
     }
@@ -179,6 +190,8 @@ public:
   }
 
   Status GetVocabulary(ServerContext* context, const ::llamagrpc::GetVocabularyRequest* request, ::llamagrpc::GetVocabularyResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
     if (!llama_manager) {
         return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
     }
@@ -191,6 +204,47 @@ public:
 
         token_msg->set_token_id(token_id);
         token_msg->set_token_str(token_str);
+    }
+
+    return Status::OK;
+  }
+
+  Status DoAddTokensAndCompute(ServerContext* context, const ::llamagrpc::DoAddTokensAndComputeRequest* request, ::llamagrpc::DoAddTokensAndComputeResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
+    std::string untokenized_string = request->input_tokens().str();
+    std::vector<llama_token> tokenized = simple_tokenize(llama_manager->get_context(), untokenized_string);
+
+    for (llama_token tok : tokenized) {
+        llama_manager->add_token(tok);
+    }
+
+    llama_manager->compute_logits();
+
+    const int n_vocab = llama_n_vocab(llama_manager->get_context());
+
+    std::priority_queue<std::pair<float, llama_token>> top_tokens;
+    float* logits = llama_get_logits(llama_manager->get_context());
+
+    for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+        float logit = logits[token_id];
+
+        top_tokens.push(std::make_pair(logit, token_id));
+    }
+
+    const int n = request->top_n_logits();
+
+    for (int i = 0; i < n; i++) {
+        std::pair<float, llama_token> top_token = top_tokens.top();
+
+        const char *token_str = llama_token_to_str(llama_manager->get_context(), top_token.second);
+
+        ::llamagrpc::TokenLogit* logit = reply->add_logit();
+        logit->set_logit(top_token.first);
+        logit->mutable_token()->set_token_id(top_token.second);
+        logit->mutable_token()->set_token_str(token_str);
+
+        top_tokens.pop();
     }
 
     return Status::OK;

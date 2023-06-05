@@ -7,6 +7,7 @@ cc_binary(
         "@llama.cpp//:llama.cpp",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/log:initialize",
         "@com_google_absl//absl/strings:str_format",
         "@com_github_grpc_grpc//:grpc++",
