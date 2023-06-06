@@ -13,6 +13,7 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/log.h"
+#include "absl/time/time.h"
 #include "absl/log/initialize.h"
 #include "absl/strings/str_format.h"
 #include "absl/synchronization/mutex.h"
@@ -101,6 +102,10 @@ class LlamaManager {
             return ctx;
         }
 
+        std::vector<llama_token> get_computed_context() {
+            return computed_context;
+        }
+
         void load_model(const std::string& model_filename) {
             if (ctx) {
                 throw std::runtime_error("Model already loaded");
@@ -125,14 +130,22 @@ class LlamaManager {
         }
 
         void compute_logits() {
-            for (llama_token tok : pending_context) {
-                if (llama_eval(ctx, &tok, 1, computed_context.size(), number_of_threads) != 0) {
+            const int n_batch_size = 8;
+
+            while (pending_context.size() > 0) {
+                const int n_tokens = std::min((int)pending_context.size(), n_batch_size);
+
+                llama_token *tokens = pending_context.data();
+
+                if (llama_eval(ctx, tokens, n_tokens, computed_context.size(), number_of_threads) != 0) {
                     throw std::runtime_error("Failed to evaluate tokens");
                 }
 
-                computed_context.push_back(tok);
+                for (int i = 0; i < n_tokens; i++) {
+                    computed_context.push_back(pending_context[i]);
+                }
+                pending_context.erase(pending_context.begin(), pending_context.begin() + n_tokens);
             }
-            pending_context.clear();
         }
 };
 
@@ -215,19 +228,45 @@ public:
     std::string untokenized_string = request->input_tokens().str();
     std::vector<llama_token> tokenized = simple_tokenize(llama_manager->get_context(), untokenized_string);
 
+    absl::Time t0 = absl::Now();
+
+    LOG(INFO) << "Adding " << tokenized.size() << " tokens to the context";
+
     for (llama_token tok : tokenized) {
         llama_manager->add_token(tok);
     }
+
+    LOG(INFO) << "Computing logits";
 
     llama_manager->compute_logits();
 
     const int n_vocab = llama_n_vocab(llama_manager->get_context());
 
+    LOG(INFO) << "Done computing logits; picking top " << request->top_n_logits() << " tokens from the vocabulary of size " << n_vocab;
+
     std::priority_queue<std::pair<float, llama_token>> top_tokens;
     float* logits = llama_get_logits(llama_manager->get_context());
 
+    std::vector<llama_token_data> candidates;
+    candidates.reserve(n_vocab);
     for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
-        float logit = logits[token_id];
+        candidates.emplace_back(llama_token_data{token_id, logits[token_id], 0.0f});
+    }                                                                   
+
+    llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
+
+    std::vector<llama_token> previous_tokens = llama_manager->get_computed_context();
+    llama_context* ctx = llama_manager->get_context();
+
+    float nl_logit = logits[llama_token_nl()];
+    const float repeat_penalty = 1.1;
+    llama_sample_repetition_penalty(ctx, &candidates_p, previous_tokens.data(), previous_tokens.size(), repeat_penalty);
+    logits[llama_token_nl()] = nl_logit;
+
+
+    for (llama_token_data token_data : candidates) {
+        float logit = token_data.logit;
+        llama_token token_id = token_data.id;
 
         top_tokens.push(std::make_pair(logit, token_id));
     }
@@ -246,6 +285,14 @@ public:
 
         top_tokens.pop();
     }
+
+
+    LOG(INFO) << "Done picking top tokens";
+
+    absl::Time t1 = absl::Now();
+    absl::Duration d = t1 - t0;
+
+    LOG(INFO) << "Added " << tokenized.size() << " tokens and computed logits in " << absl::ToDoubleSeconds(d) << " seconds";
 
     return Status::OK;
   }

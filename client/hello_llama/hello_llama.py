@@ -1,13 +1,24 @@
 from proto import llama_pb2_grpc
 from proto import llama_pb2
 import grpc
+import math
+import sys
+import random
 
 SAMPLE = """
-Hello world, this is just a test:
+Jessica: Hi there, Luke.
+Luke: Why hello there, 
+""".strip()
 
-Foo: Hi there, Bar.
-Baz: Why hello there, 
-"""
+def choose_softmax(logits, temperature=0.5):
+    choices = [(math.exp(logit.logit / temperature), logit.token) for logit in logits]
+    total = sum([choice[0] for choice in choices])
+    x = random.random() * total
+    for choice in choices:
+        x -= choice[0]
+        if x <= 0:
+            break
+    return choice[1]
 
 def run():
     with grpc.insecure_channel("localhost:50051") as channel:
@@ -23,15 +34,21 @@ def run():
         for token in response.token:
             print(token.token_id, repr(token.token_str))
 
-        response = stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
-            input_tokens = llama_pb2.InputTokens(
-                str = SAMPLE,
-            ),
-            top_n_logits = 2,
-        ))
-        print(response)
+        input_str = SAMPLE
+        sys.stdout.write(SAMPLE)
+        while True:
+            response = stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
+                input_tokens = llama_pb2.InputTokens(
+                    str = input_str,
+                ),
+                top_n_logits = 40,
+            ))
+            chosen_token = choose_softmax(response.logit, temperature=0.8)
+            input_str = chosen_token.token_str
+            sys.stdout.write(chosen_token.token_str.decode("utf-8"))
+            sys.stdout.flush()
 
-        
+            
 
 
 if __name__ == '__main__':
