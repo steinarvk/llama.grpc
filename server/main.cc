@@ -147,6 +147,27 @@ class LlamaManager {
                 pending_context.erase(pending_context.begin(), pending_context.begin() + n_tokens);
             }
         }
+
+        void save_checkpoint(std::string filename) {
+            if (!llama_save_session_file(ctx, filename.c_str(), computed_context.data(), computed_context.size())) {
+                throw std::runtime_error("Failed to save checkpoint");
+            }
+        }
+
+        void restore_checkpoint(std::string filename) {
+            computed_context.clear();
+            pending_context.clear();
+
+            computed_context.resize(4096);
+
+            size_t n_tokens;
+
+            if (!llama_load_session_file(ctx, filename.c_str(), computed_context.data(), computed_context.size(), &n_tokens)) {
+                throw std::runtime_error("Failed to load checkpoint");
+            }
+
+            computed_context.resize(n_tokens);
+        }
 };
 
 ABSL_FLAG(uint16_t, port, 50051, "Server port for the service");
@@ -293,6 +314,34 @@ public:
     absl::Duration d = t1 - t0;
 
     LOG(INFO) << "Added " << tokenized.size() << " tokens and computed logits in " << absl::ToDoubleSeconds(d) << " seconds";
+
+    return Status::OK;
+  }
+
+  Status DoSaveCheckpoint(ServerContext* context, const ::llamagrpc::DoSaveCheckpointRequest* request, ::llamagrpc::DoSaveCheckpointResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
+    if (!llama_manager) {
+        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    }
+
+    std::string filename = "/tmp/llamagrpc.saved-checkpoint";
+
+    llama_manager->save_checkpoint(filename);
+
+    return Status::OK;
+  }
+
+  Status DoRestoreCheckpoint(ServerContext* context, const ::llamagrpc::DoRestoreCheckpointRequest* request, ::llamagrpc::DoRestoreCheckpointResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
+    if (!llama_manager) {
+        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    }
+
+    std::string filename = "/tmp/llamagrpc.saved-checkpoint";
+
+    llama_manager->restore_checkpoint(filename);
 
     return Status::OK;
   }
