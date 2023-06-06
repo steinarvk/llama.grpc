@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package chatbot;
+
+message Speaker {
+    string nickname = 1;
+}
+
+message Context {
+    string description = 1;
+    Speaker human = 2;
+    Speaker bot = 3;
+}
+
+message Line {
+    string speaker = 1;
+    string text = 2;
+}
+
+message Record {
+    Context context = 1;
+    repeated Line line = 2;
+}
+
+message Scenario {
+    repeated Record example = 1;
+    Record setup = 2;
+}

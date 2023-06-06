@@ -3,6 +3,39 @@ workspace(name = "com_kaldager_llamagrpc")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
+    name = "rules_python",
+    sha256 = "863ba0fa944319f7e3d695711427d9ad80ba92c6edd0b7c7443b84e904689539",
+    strip_prefix = "rules_python-0.22.0",
+    url = "https://github.com/bazelbuild/rules_python/releases/download/0.22.0/rules_python-0.22.0.tar.gz",
+)
+
+load("@rules_python//python:repositories.bzl", "py_repositories")
+
+py_repositories()
+
+load("@rules_python//python:repositories.bzl", "python_register_toolchains")
+
+python_register_toolchains(
+    name = "python3_11",
+    python_version = "3.11",
+)
+
+load("@python3_11//:defs.bzl", "interpreter")
+
+load("@rules_python//python:pip.bzl", "pip_parse")
+
+pip_parse(
+   name = "python_deps",
+   requirements_lock = "//python:requirements_lock.txt",
+   python_interpreter_target = interpreter,
+)
+
+load("@python_deps//:requirements.bzl", "install_deps")
+install_deps()
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
     name = "com_github_grpc_grpc",
     sha256 = "9c3c0a0ad986ee4fc0a9b58fd71255010068df7d1437c425b525d68c30c85ac7",
     strip_prefix = "grpc-1.55.1",

@@ -6,11 +6,16 @@ import sys
 import random
 
 SAMPLE = """
-Jessica: Hi there, Luke.
-Luke: Why hello there, 
+Host: Hello and thanks for listening! Let's get right to it. Today's guests, could you introduce yourselves?
+Cleopatra: Hi there, I'm Cleopatra VII Philopator, Queen of Egypt, Pharaoh of the Ptolemaic Kingdom, and the last active ruler of the Ptolemaic dynasty.
+Einstein: I'm Albert Einstein, a German-born theoretical physicist who developed the theory of relativity, one of the two pillars of modern physics.
+Genghis: I'm Genghis Khan, founder and first Great Khan of the Mongol Empire.
+GRRM: I'm George R. R. Martin, an American novelist and short story writer in the fantasy, horror, and science fiction genres, screenwriter, and television producer.
+Host: Wonderful. Today our topic is microservices vs. monoliths.
 """.strip()
 
 def choose_softmax(logits, temperature=0.5):
+    print(logits)
     choices = [(math.exp(logit.logit / temperature), logit.token) for logit in logits]
     total = sum([choice[0] for choice in choices])
     x = random.random() * total
@@ -36,6 +41,7 @@ def run():
 
         input_str = SAMPLE
         sys.stdout.write(SAMPLE)
+        sys.stdout.write("[END PROMPT]")
 
         newline_counter = 0 
         while True:
@@ -52,7 +58,7 @@ def run():
                 newline_counter += 1
                 if newline_counter == 1:
                     stub.DoSaveCheckpoint(llama_pb2.DoSaveCheckpointRequest())
-                    sys.stdout.write("[save checkpoint]\n")
+                    sys.stdout.write("[save checkpoint]\n\n")
                 if newline_counter >= 5:
                     break
             sys.stdout.flush()
@@ -60,7 +66,7 @@ def run():
         while True:
             newline_counter = 0
 
-            sys.stdout.write("[restore checkpoint]\n")
+            sys.stdout.write("\n\n[restore checkpoint]\n")
             stub.DoRestoreCheckpoint(llama_pb2.DoRestoreCheckpointRequest())
 
             while True:

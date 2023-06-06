@@ -106,6 +106,10 @@ class LlamaManager {
             return computed_context;
         }
 
+        int get_remaining_context_size() {
+            return context_size_tokens - (computed_context.size() + pending_context.size());
+        }
+
         void load_model(const std::string& model_filename) {
             if (ctx) {
                 throw std::runtime_error("Model already loaded");
@@ -125,7 +129,14 @@ class LlamaManager {
             pending_context.push_back(llama_token_bos());
         }
 
+        void clear_context() {
+            computed_context.clear();
+            pending_context.clear();
+            pending_context.push_back(llama_token_bos());
+        }
+
         void add_token(llama_token tok) {
+            LOG(INFO) << "Adding token: " << tok << "(string form:" << llama_token_to_str(ctx, tok) << ")";
             pending_context.push_back(tok);
         }
 
@@ -136,6 +147,11 @@ class LlamaManager {
                 const int n_tokens = std::min((int)pending_context.size(), n_batch_size);
 
                 llama_token *tokens = pending_context.data();
+
+                LOG(INFO) << "Evaluating " << n_tokens << " tokens after computed context of " << computed_context.size() << " tokens";
+                for (int i = 0; i < n_tokens; i++) {
+                    LOG(INFO) << "token " << i << ": " << tokens[i] << "[" << llama_token_to_str(ctx, tokens[i]) << "]";
+                }
 
                 if (llama_eval(ctx, tokens, n_tokens, computed_context.size(), number_of_threads) != 0) {
                     throw std::runtime_error("Failed to evaluate tokens");
@@ -188,6 +204,8 @@ public:
 
   Status DoLoadModel(ServerContext* context, const ::llamagrpc::DoLoadModelRequest* request, ::llamagrpc::DoLoadModelResponse* reply) override {
     absl::MutexLock lock(&mutex);
+
+    LOG(INFO) << "Model name requested: " << request->model_name();
 
     const std::string mapped_model_filename = map_model_filename(request->model_name());
 
@@ -245,6 +263,10 @@ public:
 
   Status DoAddTokensAndCompute(ServerContext* context, const ::llamagrpc::DoAddTokensAndComputeRequest* request, ::llamagrpc::DoAddTokensAndComputeResponse* reply) override {
     absl::MutexLock lock(&mutex);
+
+    if (request->clear_context_first()) {
+        llama_manager->clear_context();
+    }
 
     std::string untokenized_string = request->input_tokens().str();
     std::vector<llama_token> tokenized = simple_tokenize(llama_manager->get_context(), untokenized_string);
@@ -314,6 +336,10 @@ public:
     absl::Duration d = t1 - t0;
 
     LOG(INFO) << "Added " << tokenized.size() << " tokens and computed logits in " << absl::ToDoubleSeconds(d) << " seconds";
+
+    const int n_context_used = llama_manager->get_computed_context().size();
+    reply->set_context_size_tokens(n_context_used);
+    reply->set_remaining_context_size_tokens(llama_manager->get_remaining_context_size());
 
     return Status::OK;
   }

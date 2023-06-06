@@ -72,9 +72,13 @@ message DoRestoreCheckpointResponse {
 
 message DoAddTokensAndComputeRequest {
     InputTokens input_tokens = 1;
+    bool clear_context_first = 3;
+
     uint32 top_n_logits = 2;
 }
 
 message DoAddTokensAndComputeResponse {
     repeated TokenLogit logit = 1;
+    uint32 context_size_tokens = 2;
+    uint32 remaining_context_size_tokens = 3;
 }
