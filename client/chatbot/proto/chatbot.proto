@@ -22,7 +22,13 @@ message Record {
     repeated Line line = 2;
 }
 
+message Example {
+    Record record = 1;
+    bool has_end_chat_marker = 2;
+    bool sticky = 3;
+}
+
 message Scenario {
-    repeated Record example = 1;
+    repeated Example example = 1;
     Record setup = 2;
 }

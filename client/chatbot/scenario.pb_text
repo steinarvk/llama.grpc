@@ -1,29 +1,56 @@
 example: {
-  context {
-    human { nickname: "Alice" }
-    bot { nickname: "Bob" }
-    description: "Bob is a helpful person who will answer Alice's queries to the best of his abilities."
+  record {
+    context {
+      human { nickname: "Alice" }
+      bot { nickname: "Bob" }
+      description: "Bob is a helpful person who will answer Alice's queries to the best of his abilities."
+    }
+    line {
+      speaker: "Bob"
+      text: "Hi there, Alice! What can I help you with today?"
+    }
+    line {
+      speaker: "Alice"
+      text: "What's the capital of France?"
+    }
+    line {
+      speaker: "Bob"
+      text: "The capital of France is Paris."
+    }
+    line {
+      speaker: "Alice"
+      text: "What does the htonl() function do?"
+    }
+    line {
+      speaker: "Bob"
+      text: "htonl() means host-to-network-long(-integer). It converts a 32-bit integer from host byte order to network byte order. Network byte order is big-endian. Host byte order varies by system. So depending on your system, either it reverses the byte order (if your system is little-endian) or it is actually the identity function (if your system is big-endian)."
+    }
   }
-  line {
-    speaker: "Bob"
-    text: "Hi there, Alice! What can I help you with today?"
+  has_end_chat_marker: true
+  sticky: false
+}
+example: {
+  record {
+    context {
+      human { nickname: "Alice" }
+      bot { nickname: "Bob" }
+      description: "Bob is a helpful person who will answer Alice's queries to the best of his abilities."
+    }
+    line {
+      speaker: "Bob"
+      text: "Hello, Alice! How can I help?"
+    }
+    line {
+      speaker: "Alice"
+      text: "What's the capital of France?"
+    }
+    line {
+      speaker: "Bob"
+      text: "The capital of France is Paris."
+    }
   }
-  line {
-    speaker: "Alice"
-    text: "What's the capital of France?"
-  }
-  line {
-    speaker: "Bob"
-    text: "The capital of France is Paris."
-  }
-  line {
-    speaker: "Alice"
-    text: "What does the htonl() function do?"
-  }
-  line {
-    speaker: "Bob"
-    text: "htonl() means host-to-network-long(-integer). It converts a 32-bit integer from host byte order to network byte order. Network byte order is big-endian. Host byte order varies by system. So depending on your system, either it reverses the byte order (if your system is little-endian) or it is actually the identity function (if your system is big-endian)."
-  }
+  has_end_chat_marker: true
+  sticky: true
 }
 setup {
   context {

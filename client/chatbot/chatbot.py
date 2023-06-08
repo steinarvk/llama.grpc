@@ -18,19 +18,55 @@ flags.DEFINE_string("scenario", "scenario.pb_text", "Scenario to run.")
 flags.DEFINE_string("server", "localhost:50051", "Address of server to connect to.")
 flags.DEFINE_string("model_name", "13B", "Model to request.")
 
-def format_initial_prompt(scenario):
-    lines = []
+def max_prompt_size(scenario):
+    n = 0
+    for example in scenario.example:
+        if example.sticky:
+            continue
+        n += len(example.record.line)
+    n += len(scenario.setup.line)
+    return n
 
-    for record in list(scenario.example) + [scenario.setup]:
-        if lines:
-            lines.append("")
+def format_initial_prompt(scenario, size=None):
+    linesets = []
+
+    size = size if size is not None else max_prompt_size(scenario)
+
+    def show_record(record, end_chat_marker, show_only=None):
+        if (show_only is not None) and (show_only <= 0):
+            return
+        lines = []
+        linesets.append(lines)
         lines.append(f"=== NEW CHAT ===")
         if record.context.description:
             lines.append("")
             lines.append(record.context.description)
         lines.append("")
-        for line in record.line:
+        omit = max(0, len(record.line) - show_only if show_only is not None else 0)
+        if omit:
+            lines.append("...")
+        for i, line in enumerate(record.line):
+            if i < omit:
+                continue
             lines.append(f"{line.speaker}: {line.text}")
+        if end_chat_marker:
+            lines.append(f"<<< {record.context.human.nickname} ended chat >>>")
+    
+    remaining = size
+
+    show_record(scenario.setup, end_chat_marker=False, show_only=remaining)
+    remaining -= len(scenario.setup.line)
+
+    for example in reversed(scenario.example):
+        show_record(example.record, end_chat_marker=example.has_end_chat_marker, show_only=remaining)
+        remaining -= len(example.record.line)
+
+    linesets.reverse()
+    lines = []
+    for lineset in linesets:
+        if lines:
+            lines.append("")
+        lines.extend(lineset)
         lines.append("")
     
     return "\n".join(lines)
@@ -45,7 +81,7 @@ def read_input(human_speaker):
         sys.exit(0)
     return rv
 
-def is_acceptable_token(token, exclude=set(), require_prefix=""):
+def is_acceptable_token(token, exclude=set(), require_prefix="", forbid_prefixes=set()):
     if token.token_id in exclude:
         return False
     
@@ -59,10 +95,14 @@ def is_acceptable_token(token, exclude=set(), require_prefix=""):
         if value[:n] != require_prefix[:n]:
             return False
     
+    for prefix in forbid_prefixes:
+        if value.startswith(prefix):
+            return False
+    
     return True
 
-def choose_softmax(logits, temperature=0.5, exclude=set(), require_prefix=""):
-    choices = [(math.exp(logit.logit / temperature), logit.token) for logit in logits if is_acceptable_token(logit.token, exclude=exclude, require_prefix="")]
+def choose_softmax(logits, temperature=0.5, exclude=set(), require_prefix="", forbid_prefixes=set()):
+    choices = [(math.exp(logit.logit / temperature), logit.token) for logit in logits if is_acceptable_token(logit.token, exclude=exclude, require_prefix=require_prefix, forbid_prefixes=forbid_prefixes)]
     total = sum([choice[0] for choice in choices])
     x = random.random() * total
     for choice in choices:
@@ -92,7 +132,7 @@ def generate_line(stub, human_speaker, input_line, bot_speaker):
     result = ""
 
     while True:
-        logging.info(f"Feeding: {repr(input_str)}")
+        logging.debug(f"Feeding: {repr(input_str)}")
         response = stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
             input_tokens = llama_pb2.InputTokens(
                 str = input_str,
@@ -102,8 +142,9 @@ def generate_line(stub, human_speaker, input_line, bot_speaker):
         if result.endswith("\n"):
             break
         exclude = {13} if not result else set()
-        chosen_token = choose_softmax(response.logit, temperature=0.5, exclude=exclude, require_prefix=require_prefix)
-        logging.info(f"Chose token: {chosen_token}")
+        forbid_prefixes = {" ", "<"} if not result else set()
+        chosen_token = choose_softmax(response.logit, temperature=0.5, exclude=exclude, require_prefix=require_prefix, forbid_prefixes=forbid_prefixes)
+        logging.debug(f"Chose token: {chosen_token}")
         input_str = chosen_token.token_str.decode("utf-8")
         require_prefix = require_prefix[len(input_str):]
         result += input_str
@@ -112,6 +153,33 @@ def generate_line(stub, human_speaker, input_line, bot_speaker):
     result = result[len(original_require_prefix):]
     
     return result.strip(), response.context_size_tokens
+
+def format_suitable_prompt(scenario, target_context_size, count_tokens):
+    min_size = 2
+    max_size = max_prompt_size(scenario)
+
+    assert count_tokens(format_initial_prompt(scenario, size=min_size)) <= target_context_size
+
+    lo = min_size
+    hi = max_size + 1
+
+    assert hi >= lo
+
+    while hi > lo + 1:
+        mid = (lo + hi) // 2
+        ntok = count_tokens(format_initial_prompt(scenario, size=mid))
+        if ntok <= target_context_size:
+            logging.debug("Tried size=%d; too small (%d tokens)", mid, ntok)
+            lo = mid
+        else:
+            logging.debug("Tried size=%d; too big (%d tokens)", mid, ntok)
+            hi = mid
+
+    prompt = format_initial_prompt(scenario, size=lo)
+
+    logging.debug("Found suitable prompt size: %d [between %d and %d]; %d tokens", lo, min_size, max_size, count_tokens(prompt))
+
+    return prompt
 
 def main(argv):
   del argv  # Unused.
@@ -125,7 +193,22 @@ def main(argv):
 
     stub.DoLoadModel(llama_pb2.DoLoadModelRequest(model_name=FLAGS.model_name))
 
-    prompt = format_initial_prompt(scenario)
+    def count_tokens(s):
+        response = stub.Tokenize(llama_pb2.TokenizeRequest(text=s))
+        return len(response.token)
+
+    min_size = 2
+    max_size = max_prompt_size(scenario)
+
+    max_context_size = 2048
+    target_context_size = max_context_size // 2
+    context_size_threshold = max_context_size - 256
+
+    target_context_size = 400
+    context_size_threshold = 512
+
+    prompt = format_suitable_prompt(scenario, target_context_size, count_tokens)
+
     human_speaker = scenario.setup.context.human.nickname
     bot_speaker = scenario.setup.context.bot.nickname
     opposite_speaker = {
@@ -146,9 +229,21 @@ def main(argv):
 
     while True:
         input_line = read_input(human_speaker)
+        scenario.setup.line.add(speaker=human_speaker, text=input_line)
         output_line, current_context_size = generate_line(stub, human_speaker, input_line, bot_speaker)
+        scenario.setup.line.add(speaker=bot_speaker, text=output_line)
         print(f"[{current_context_size}] {bot_speaker}: {output_line}")
         sys.stdout.flush()
+
+        if current_context_size > context_size_threshold:
+            logging.info("Threshold reached; recomputing prompt.")
+            prompt = format_suitable_prompt(scenario, target_context_size, count_tokens)
+            stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
+                input_tokens = llama_pb2.InputTokens(
+                    str = prompt,
+                ),
+                clear_context_first = True,
+            ))
 
 if __name__ == '__main__':
   app.run(main)
