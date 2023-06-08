@@ -1,0 +1,29 @@
+setup {
+  context {
+    bot { nickname: "Host" }
+    bot { nickname: "Einstein" }
+    bot { nickname: "Cleopatra" }
+    bot { nickname: "Genghis" }
+    description: "Albert Einstein, Cleopatra, and Genghis Khan are guests on a time-travelling podcast, discussing issues of the day."
+  }
+  line {
+    speaker: "Host"
+    text: "Hello and thanks for listening! Let's get right to it. Today's guests, could you introduce yourselves?"
+  }
+  line {
+    speaker: "Cleopatra"
+    text: "Hi there, I'm Cleopatra VII Philopator, Queen of Egypt, Pharaoh of the Ptolemaic Kingdom, and the last active ruler of the Ptolemaic dynasty."
+  }
+  line {
+    speaker: "Einstein"
+    text: "I'm Albert Einstein, a German-born theoretical physicist who developed the theory of relativity, one of the two pillars of modern physics."
+  }
+  line {
+    speaker: "Genghis"
+    text: "I'm Genghis Khan, founder and first Great Khan of the Mongol Empire."
+  }
+  line {
+    speaker: "Host"
+    text: "Wonderful. Today our topic is microservices vs. monoliths."
+  }
+}

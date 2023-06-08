@@ -9,7 +9,7 @@ message Speaker {
 message Context {
     string description = 1;
     Speaker human = 2;
-    Speaker bot = 3;
+    repeated Speaker bot = 3;
 }
 
 message Line {

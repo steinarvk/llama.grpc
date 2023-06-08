@@ -101,18 +101,40 @@ def is_acceptable_token(token, exclude=set(), require_prefix="", forbid_prefixes
     
     return True
 
-def choose_softmax(logits, temperature=0.5, exclude=set(), require_prefix="", forbid_prefixes=set()):
-    choices = [(math.exp(logit.logit / temperature), logit.token) for logit in logits if is_acceptable_token(logit.token, exclude=exclude, require_prefix=require_prefix, forbid_prefixes=forbid_prefixes)]
+def choose_softmax(logits, temperature=0.5, exclude=set(), accept_prefixes: list[str] | None = None, text_so_far: str = ""):
+    choices = []
+
+    for logit in logits:
+        if not is_acceptable_token(logit.token, exclude=exclude):
+            continue
+
+        token_str = logit.token.token_str.decode("utf-8")
+
+        if accept_prefixes is not None and not remaining_options_for_prefixes(accept_prefixes, text_so_far + token_str):
+            continue
+
+        choices.append((math.exp(logit.logit / temperature), logit.token))
+
+    assert choices
+
     total = sum([choice[0] for choice in choices])
+
     x = random.random() * total
     for choice in choices:
         x -= choice[0]
         if x <= 0:
             break
+
     return choice[1]
 
+def remaining_options_for_prefixes(options, text_so_far):
+    rv = []
+    for opt in options:
+        if opt.startswith(text_so_far) or text_so_far.startswith(opt):
+            rv.append(opt)
+    return rv
 
-def generate_line(stub, human_speaker, input_line, bot_speaker):
+def generate_line(stub, input_str: str, accept_prefixes: list[str]):
     # Note: there is a subtlety here. Why not just f"{human_speaker}: {input_line}\n{bot_speaker}: "?
     #       The reason is that there is no guarantee that the following will hold:
     #            Tokenize(s1 + s2) = Tokenize(s1) + Tokenize(s2)        [NOT true in general]
@@ -125,9 +147,7 @@ def generate_line(stub, human_speaker, input_line, bot_speaker):
     #       (Note: we are still assuming that a newline is always a token by itself. I believe this
     #       is at least currently true.)
 
-    input_str = f"{human_speaker}: {input_line}\n"
-    original_require_prefix = f"{bot_speaker}: "
-    require_prefix = original_require_prefix
+    prefixes = list(accept_prefixes)
 
     result = ""
 
@@ -142,17 +162,22 @@ def generate_line(stub, human_speaker, input_line, bot_speaker):
         if result.endswith("\n"):
             break
         exclude = {13} if not result else set()
-        forbid_prefixes = {" ", "<"} if not result else set()
-        chosen_token = choose_softmax(response.logit, temperature=0.5, exclude=exclude, require_prefix=require_prefix, forbid_prefixes=forbid_prefixes)
+        chosen_token = choose_softmax(response.logit, temperature=0.5, exclude=exclude, accept_prefixes=prefixes, text_so_far=result)
         logging.debug(f"Chose token: {chosen_token}")
         input_str = chosen_token.token_str.decode("utf-8")
-        require_prefix = require_prefix[len(input_str):]
+
         result += input_str
 
-    assert result.startswith(original_require_prefix)
-    result = result[len(original_require_prefix):]
+        new_prefixes = remaining_options_for_prefixes(prefixes, result)
+        assert new_prefixes
+        prefixes = new_prefixes
+
+
+    assert len(prefixes) == 1
+    assert result.startswith(prefixes[0])
+    result = result[len(prefixes[0]):]
     
-    return result.strip(), response.context_size_tokens
+    return result.strip(), prefixes[0], response.context_size_tokens
 
 def format_suitable_prompt(scenario, target_context_size, count_tokens):
     min_size = 2
@@ -204,17 +229,9 @@ def main(argv):
     target_context_size = max_context_size // 2
     context_size_threshold = max_context_size - 256
 
-    target_context_size = 400
-    context_size_threshold = 512
-
     prompt = format_suitable_prompt(scenario, target_context_size, count_tokens)
 
-    human_speaker = scenario.setup.context.human.nickname
-    bot_speaker = scenario.setup.context.bot.nickname
-    opposite_speaker = {
-        human_speaker: bot_speaker,
-        bot_speaker: human_speaker,
-    }
+    human = scenario.setup.context.human
 
     logging.info(f"Feeding: {repr(prompt)}")
     stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
@@ -228,11 +245,20 @@ def main(argv):
     sys.stdout.flush()
 
     while True:
-        input_line = read_input(human_speaker)
-        scenario.setup.line.add(speaker=human_speaker, text=input_line)
-        output_line, current_context_size = generate_line(stub, human_speaker, input_line, bot_speaker)
-        scenario.setup.line.add(speaker=bot_speaker, text=output_line)
-        print(f"[{current_context_size}] {bot_speaker}: {output_line}")
+        input_str = ""
+        if human.nickname:
+            input_line = read_input(human.nickname)
+            scenario.setup.line.add(speaker=human.nickname, text=input_line)
+            input_str = f"{human.nickname}: {input_line}\n"
+
+        accept_prefixes = [f"{speaker.nickname}: " for speaker in scenario.setup.context.bot]
+
+        output_line, chosen_prefix, current_context_size = generate_line(stub, input_str=input_str, accept_prefixes=accept_prefixes)
+
+        chosen_speaker = chosen_prefix.split(":")[0]
+
+        scenario.setup.line.add(speaker=chosen_speaker, text=output_line)
+        print(f"[{current_context_size}] {chosen_speaker}: {output_line}")
         sys.stdout.flush()
 
         if current_context_size > context_size_threshold:
