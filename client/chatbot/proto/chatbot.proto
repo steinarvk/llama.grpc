@@ -2,14 +2,20 @@ syntax = "proto3";
 
 package chatbot;
 
+message Affixes {
+    string prefix = 1;
+    string suffix = 2;
+}
+
 message Speaker {
-    string nickname = 1;
+    string name = 2;
+    Affixes affixes = 3;
+    bool human = 4;
 }
 
 message Context {
     string description = 1;
-    Speaker human = 2;
-    repeated Speaker bot = 3;
+    repeated Speaker speaker = 4;
 }
 
 message Line {

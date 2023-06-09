@@ -1,9 +1,15 @@
 setup {
   context {
-    bot { nickname: "Host" }
-    bot { nickname: "Einstein" }
-    bot { nickname: "Cleopatra" }
-    bot { nickname: "Genghis" }
+    speaker { name: "Host" }
+    speaker { name: "Einstein" }
+    speaker { name: "Cleopatra" }
+    speaker { name: "Genghis" }
+    speaker {
+      name: "narrator"
+      affixes {
+        prefix: " * "
+      }
+    }
     description: "Albert Einstein, Cleopatra, and Genghis Khan are guests on a time-travelling podcast, discussing issues of the day."
   }
   line {
@@ -15,8 +21,16 @@ setup {
     text: "Hi there, I'm Cleopatra VII Philopator, Queen of Egypt, Pharaoh of the Ptolemaic Kingdom, and the last active ruler of the Ptolemaic dynasty."
   }
   line {
+    speaker: "narrator"
+    text: "Albert Einstein scratches his chin thoughtfully."
+  }
+  line {
     speaker: "Einstein"
     text: "I'm Albert Einstein, a German-born theoretical physicist who developed the theory of relativity, one of the two pillars of modern physics."
+  }
+  line {
+    speaker: "narrator"
+    text: "Genghis Khan stirs from his seat."
   }
   line {
     speaker: "Genghis"

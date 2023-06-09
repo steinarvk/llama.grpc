@@ -199,6 +199,10 @@ public:
         return "/home/svk/dalai/llama/models/13B/ggml-model-q4_0.bin";
     }
 
+    if (model_name == "65B") {
+        return "/home/svk/models/65B/ggml-model-q4_0.bin";
+    }
+
     throw std::runtime_error("Unknown model: " + model_name);
   }
 

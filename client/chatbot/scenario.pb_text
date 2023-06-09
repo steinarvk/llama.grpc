@@ -1,8 +1,13 @@
 example: {
   record {
     context {
-      human { nickname: "Alice" }
-      bot { nickname: "Bob" }
+      speaker {
+        name: "Alice"
+        human: true
+      }
+      speaker {
+        name: "Bob"
+      }
       description: "Bob is a helpful person who will answer Alice's queries to the best of his abilities."
     }
     line {
@@ -32,8 +37,13 @@ example: {
 example: {
   record {
     context {
-      human { nickname: "Alice" }
-      bot { nickname: "Bob" }
+      speaker {
+        name: "Alice"
+        human: true
+      }
+      speaker {
+        name: "Bob"
+      }
       description: "Bob is a helpful person who will answer Alice's queries to the best of his abilities."
     }
     line {
@@ -54,8 +64,13 @@ example: {
 }
 setup {
   context {
-    human { nickname: "Alice" }
-    bot { nickname: "Bob" }
+    speaker {
+      name: "Alice"
+      human: true
+    }
+    speaker {
+      name: "Bob"
+    }
     description: "Bob is a helpful person who will answer Alice's queries to the best of his abilities."
   }
   line {
