@@ -1,0 +1,44 @@
+setup {
+  context {
+    speaker { name: "Jessica" }
+    speaker { name: "Luke" }
+    speaker { name: "Ethan" }
+    comment: "Based on Llama 13B raw text prediction output."
+  }
+  line {
+    speaker: "Jessica"
+    text: "Hi there, Luke."
+  }
+  line {
+    speaker: "Luke"
+    text: "Why hello there, Jessica. How's the weather up there in the sky?"
+  }
+  line {
+    speaker: "Jessica"
+    text: "Don't you think I look cool?"
+  }
+  line {
+    speaker: "Luke"
+    text: "You're pretty cool when you're not covered in white paint, anyway."
+  }
+  line {
+    speaker: "Ethan"
+    text: "Jessica, hi! What's this all about? Aaahh... white paint?"
+  }
+  line {
+    speaker: "Jessica"
+    text: "Oh, it was just a joke... and you don't look very smart now, Ethan."
+  }
+  line {
+    speaker: "Ethan"
+    text: "I do too, actually!"
+  }
+  line {
+    speaker: "Ethan"
+    text: "And guess what? I can do anything now!"
+  }
+  line {
+    speaker: "Ethan"
+    text: "Yup, and so can you, because you've got a face on your head."
+  }
+}

@@ -1,0 +1,54 @@
+setup {
+  context {
+    speaker {
+      name: "Player"
+      affixes {
+        prefix: ">>>"
+      }
+      human: true
+    }
+    speaker {
+      name: "Game"
+      affixes {
+        prefix: "| "
+      }
+    }
+    description: "A record of a play session of an interactive fiction game."
+  }
+  line {
+    speaker: "Game"
+    text: "You are standing in a forest in front of a dark cave."
+  }
+  line {
+    speaker: "Player"
+    text: "inventory"
+  }
+  line {
+    speaker: "Game"
+    text: "You are carrying: a sword, a shield, and a lantern."
+  }
+  line {
+    speaker: "Player"
+    text: "enter cave"
+  }
+  line {
+    speaker: "Game"
+    text: "You enter the dark cave. You can't see a thing in here."
+  }
+  line {
+    speaker: "Player"
+    text: "light lantern"
+  }
+  line {
+    speaker: "Game"
+    text: "In the flickering light of the lantern, you can see your surroundings now. There is a passage to the north, and a narrow one going west."
+  }
+  line {
+    speaker: "Player"
+    text: "west"
+  }
+  line {
+    speaker: "Game"
+    text: "You can't fit through the narrow passage."
+  }
+}

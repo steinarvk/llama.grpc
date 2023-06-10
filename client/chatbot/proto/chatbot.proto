@@ -16,6 +16,7 @@ message Speaker {
 message Context {
     string description = 1;
     repeated Speaker speaker = 4;
+    string comment = 5;
 }
 
 message Line {
