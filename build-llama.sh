@@ -5,6 +5,6 @@ rm -rf build.llamacpp
 mkdir build.llamacpp
 pushd build.llamacpp
 cmake ..
-make
+make LLAMA_OPENBLAS=1
 popd
 popd
