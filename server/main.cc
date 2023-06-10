@@ -21,6 +21,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/strip.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/random/random.h"
 
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/grpcpp.h>
@@ -122,6 +123,21 @@ std::string read_text_file(const std::string& filename)
     return buffer.str();
 }
 
+std::string generate_session_id() {
+    static const char *alphabet = "abcdef0123456789";
+    const int sz = strlen(alphabet);
+    const int n_chars = 32;
+    std::string rv = "";
+
+    absl::BitGen gen;
+
+    for (int i = 0; i < n_chars; i++) {
+        rv += alphabet[absl::Uniform(gen, 0, sz)];
+    }
+
+    return rv;
+}
+
 uint64_t current_time_millis() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
@@ -140,6 +156,9 @@ class LlamaManager {
     private:
         const int number_of_threads;
         const int context_size_tokens;
+        const std::string session_id;
+
+        ::llamagrpc::SessionInfo session_info;
 
         llama_context *ctx;
 
@@ -147,17 +166,44 @@ class LlamaManager {
         std::vector<llama_token> pending_context;
 
     public:
-        LlamaManager(int n_threads, int n_context) :
+        LlamaManager(int n_threads, int n_context, std::string model_name, const std::filesystem::path& model_path) :
               number_of_threads (n_threads)
             , context_size_tokens (n_context)
+            , session_id (generate_session_id())
             , ctx (nullptr)
         {
+            LOG(INFO) << "Initializing session " << session_id;
+
+            llama_context_params lparams = llama_context_default_params();
+            lparams.n_ctx = context_size_tokens;
+
+            ctx = llama_init_from_file(model_path.c_str(), lparams);
+
+            if (ctx == nullptr) {
+                throw std::runtime_error("Error: failed to initialize llama context");
+            }
+
+            pending_context.push_back(llama_token_bos());
+
+            session_info.set_session_id(session_id);
+            session_info.set_model_name(model_name);
+            session_info.set_start_time_unix_nanos(absl::ToUnixNanos(absl::Now()));
+
+            LOG(INFO) << "Initialized session " << session_id;
         }
 
         ~LlamaManager() {
             if (ctx != nullptr) {
                 llama_free(ctx);
             }
+        }
+
+        const ::llamagrpc::SessionInfo& get_session_info() {
+            return session_info;
+        }
+
+        const std::string& get_session_id() {
+            return session_id;
         }
 
         llama_context* get_context() {
@@ -170,25 +216,6 @@ class LlamaManager {
 
         int get_remaining_context_size() {
             return context_size_tokens - (computed_context.size() + pending_context.size());
-        }
-
-        void load_model(const std::string& model_filename) {
-            if (ctx) {
-                throw std::runtime_error("Model already loaded");
-            }
-
-            llama_context_params lparams = llama_context_default_params();
-            lparams.n_ctx = context_size_tokens;
-
-            ctx = llama_init_from_file(model_filename.c_str(), lparams);
-
-            if (ctx == nullptr) {
-                throw std::runtime_error("Error: failed to initialize llama context");
-            }
-
-            computed_context.clear();
-            pending_context.clear();
-            pending_context.push_back(llama_token_bos());
         }
 
         void clear_context() {
@@ -263,7 +290,7 @@ public:
     models = find_models();
   }
 
-  std::string map_model_filename(const std::string& model_name) {
+  std::filesystem::path map_model_filename(const std::string& model_name) {
     const auto& it = models.find(model_name);
     if (it == models.end()) {
         throw std::runtime_error("Unknown model: " + model_name);
@@ -275,28 +302,25 @@ public:
   Status DoLoadModel(ServerContext* context, const ::llamagrpc::DoLoadModelRequest* request, ::llamagrpc::DoLoadModelResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
-    LOG(INFO) << "Model name requested: " << request->model_name();
-
-    const std::string mapped_model_filename = map_model_filename(request->model_name());
-
-    LOG(INFO) << "Loading requested model: " << mapped_model_filename;
-
     const int n_context = absl::GetFlag(FLAGS_context_size);
 
-    llama_manager.reset(new LlamaManager(n_threads, n_context));
-    llama_manager->load_model(mapped_model_filename);
+    std::string model_name = request->model_name();
+    std::string model_filename = map_model_filename(model_name);
 
-    LOG(INFO) << "Done loading requested model: " << mapped_model_filename;
+    llama_manager.reset(new LlamaManager(n_threads, n_context, model_name, model_filename));
 
     reply->set_model_ready(true);
+    reply->mutable_session_info()->CopyFrom(llama_manager->get_session_info());
+
     return Status::OK;
   }
 
   Status Tokenize(ServerContext* context, const ::llamagrpc::TokenizeRequest* request, ::llamagrpc::TokenizeResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
-    if (!llama_manager) {
-        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    Status status = EnsureSessionLoaded("");
+    if (!status.ok()) {
+        return status;
     }
 
     const std::string text = request->text();
@@ -316,8 +340,9 @@ public:
   Status GetVocabulary(ServerContext* context, const ::llamagrpc::GetVocabularyRequest* request, ::llamagrpc::GetVocabularyResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
-    if (!llama_manager) {
-        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    Status status = EnsureSessionLoaded("");
+    if (!status.ok()) {
+        return status;
     }
 
     const int n_vocab = llama_n_vocab(llama_manager->get_context());
@@ -333,8 +358,29 @@ public:
     return Status::OK;
   }
 
+  Status EnsureSessionLoaded(const std::string session_id) {
+    if (!llama_manager) {
+        return Status(StatusCode::FAILED_PRECONDITION, "No model loaded");
+    }
+
+    // Anything will do if nothing is requested.
+    if (!session_id.empty()) {
+        if (llama_manager->get_session_id() != session_id) {
+            return Status(StatusCode::FAILED_PRECONDITION, absl::StrCat("session_id requested:", session_id, " is not loaded"));
+        }
+    }
+
+    return Status::OK;
+  }
+
   Status DoAddTokensAndCompute(ServerContext* context, const ::llamagrpc::DoAddTokensAndComputeRequest* request, ::llamagrpc::DoAddTokensAndComputeResponse* reply) override {
     absl::MutexLock lock(&mutex);
+
+    Status status = EnsureSessionLoaded(request->session_id());
+    if (!status.ok()) {
+        return status;
+    }
+    reply->mutable_session_info()->CopyFrom(llama_manager->get_session_info());
 
     if (request->clear_context_first()) {
         llama_manager->clear_context();
@@ -419,9 +465,11 @@ public:
   Status DoSaveCheckpoint(ServerContext* context, const ::llamagrpc::DoSaveCheckpointRequest* request, ::llamagrpc::DoSaveCheckpointResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
-    if (!llama_manager) {
-        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    Status status = EnsureSessionLoaded(request->session_id());
+    if (!status.ok()) {
+        return status;
     }
+    reply->mutable_session_info()->CopyFrom(llama_manager->get_session_info());
 
     std::string filename = "/tmp/llamagrpc.saved-checkpoint";
 
@@ -433,9 +481,11 @@ public:
   Status DoRestoreCheckpoint(ServerContext* context, const ::llamagrpc::DoRestoreCheckpointRequest* request, ::llamagrpc::DoRestoreCheckpointResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
-    if (!llama_manager) {
-        return Status(StatusCode::FAILED_PRECONDITION, "Model not loaded");
+    Status status = EnsureSessionLoaded(request->session_id());
+    if (!status.ok()) {
+        return status;
     }
+    reply->mutable_session_info()->CopyFrom(llama_manager->get_session_info());
 
     std::string filename = "/tmp/llamagrpc.saved-checkpoint";
 

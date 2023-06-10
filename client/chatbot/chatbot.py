@@ -268,7 +268,9 @@ def main(argv):
   with grpc.insecure_channel(FLAGS.server) as channel:
     stub = llama_pb2_grpc.LlamaServiceStub(channel)
 
-    stub.DoLoadModel(llama_pb2.DoLoadModelRequest(model_name=FLAGS.model_name))
+    response = stub.DoLoadModel(llama_pb2.DoLoadModelRequest(model_name=FLAGS.model_name))
+    session_id = response.session_info.session_id
+    logging.info(f"Loaded model; session ID: {session_id}")
 
     def count_tokens(s):
         response = stub.Tokenize(llama_pb2.TokenizeRequest(text=s))
@@ -287,6 +289,7 @@ def main(argv):
     logging.info(f"Feeding: {repr(prompt)} [tokens: {n_tokens}]")
     t0 = time.time()
     stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
+        session_id = session_id,
         input_tokens = llama_pb2.InputTokens(
             str = prompt,
         ),
@@ -344,6 +347,7 @@ def main(argv):
             n_tokens = count_tokens(prompt)
             t0 = time.time()
             stub.DoAddTokensAndCompute(llama_pb2.DoAddTokensAndComputeRequest(
+                session_id = session_id,
                 input_tokens = llama_pb2.InputTokens(
                     str = prompt,
                 ),

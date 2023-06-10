@@ -14,6 +14,12 @@ service LlamaService {
   rpc DoRestoreCheckpoint (DoRestoreCheckpointRequest) returns (DoRestoreCheckpointResponse) {}
 }
 
+message SessionInfo {
+    string session_id = 1;
+    string model_name = 2;
+    uint64 start_time_unix_nanos = 3;
+}
+
 message TokenizeRequest {
     string text = 1;
 }
@@ -56,21 +62,28 @@ message DoLoadModelRequest {
 
 message DoLoadModelResponse {
     bool model_ready = 1;
+    SessionInfo session_info = 2;
 }
 
 message DoSaveCheckpointRequest {
+    string session_id = 1;
 }
 
 message DoSaveCheckpointResponse {
+    SessionInfo session_info = 1;
 }
 
 message DoRestoreCheckpointRequest {
+    string session_id = 1;
 }
 
 message DoRestoreCheckpointResponse {
+    SessionInfo session_info = 1;
 }
 
 message DoAddTokensAndComputeRequest {
+    string session_id = 4;
+
     InputTokens input_tokens = 1;
     bool clear_context_first = 3;
 
@@ -81,4 +94,6 @@ message DoAddTokensAndComputeResponse {
     repeated TokenLogit logit = 1;
     uint32 context_size_tokens = 2;
     uint32 remaining_context_size_tokens = 3;
+
+    SessionInfo session_info = 4;
 }
