@@ -9,6 +9,7 @@ from proto import llama_pb2
 from client.chatbot.proto import chatbot_pb2
 
 import grpc
+import shutil
 import math
 import sys
 import random
@@ -18,6 +19,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("scenario", "scenario.pb_text", "Scenario to run.")
 flags.DEFINE_string("server", "localhost:50051", "Address of server to connect to.")
 flags.DEFINE_string("model_name", "13B", "Model to request.")
+flags.DEFINE_string("output_transcript", "", "Save transcript of conversation to this file.")
 
 def max_prompt_size(scenario):
     n = 0
@@ -309,6 +311,14 @@ def main(argv):
         formatted_line = f"{speaker.affixes.prefix}{text}{speaker.affixes.suffix}\n"
         sys.stdout.write(formatted_line)
         sys.stdout.flush()
+
+        if FLAGS.output_transcript:
+            value = text_format.MessageToString(scenario)
+            tmp = f"{FLAGS.output_transcript}.tmp"
+            with open(tmp, "w") as f:
+                f.write(value)
+            shutil.move(tmp, FLAGS.output_transcript)
+
         return formatted_line
 
     while True:
