@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package llamagrpc_internal;
+
+message TokenSequence {
+    repeated uint32 token_id = 1;
+}
+
+message TokenHashSequence {
+    repeated string hexdigest = 1;
+}
+
+message ModelIdentifier {
+    string model_relative_filename = 1;
+}
+
+message SnapshotDesc {
+    string snapshot_relative_path = 1;
+    ModelIdentifier model = 2;
+    uint64 timestamp_unix_secs = 3;
+    uint64 file_size_bytes = 4;
+    TokenSequence tokens = 5;
+}
+
+message SnapshotQuery {
+    ModelIdentifier model = 1;
+    TokenSequence tokens = 2;
+}
+
+message SnapshotQueryResult {
+    string snapshot_full_path = 1;
+}

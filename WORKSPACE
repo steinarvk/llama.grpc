@@ -62,9 +62,16 @@ load("@rules_proto_grpc//:repositories.bzl", "rules_proto_grpc_toolchains", "rul
 rules_proto_grpc_toolchains()
 rules_proto_grpc_repos()
 
+SQLITE_BAZEL_COMMIT = "18e4c6c7a96c4b01a4dd61676e90afe57a0fd27c"
+
+http_archive(
+    name = "com_github_rockwotj_sqlite_bazel",
+    strip_prefix = "sqlite-bazel-" + SQLITE_BAZEL_COMMIT,
+    urls = ["https://github.com/rockwotj/sqlite-bazel/archive/%s.zip" % SQLITE_BAZEL_COMMIT],
+)
+
 new_local_repository(
     name = "llama.cpp",
     path = "./llama.cpp",
     build_file = "@//:llama.cpp.BUILD",
 )
-

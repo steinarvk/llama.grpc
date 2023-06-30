@@ -1,11 +1,38 @@
+cc_library(
+    name = "storage",
+    srcs = ["storage.cc"],
+    hdrs = ["storage.h"],
+    deps = [
+        "//proto/internal:llamagrpc_internal_cc_proto",
+        "@com_github_rockwotj_sqlite_bazel//:sqlite3",
+        "//vendor:SHA256",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/log:initialize",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_github_grpc_grpc//:grpc++_reflection",
+    ],
+)
+
 cc_binary(
     name = "llama.grpc_server",
     srcs = ["main.cc"],
     defines = ["BAZEL_BUILD"],
+    linkopts = ['-ldl'],
     deps = [
         "//proto:llama_cc_grpc",
+        "//proto/internal:llamagrpc_internal_cc_proto",
+        ":storage",
         "@llama.cpp//:llama.cpp",
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/log:initialize",

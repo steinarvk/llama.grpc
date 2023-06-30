@@ -9,6 +9,7 @@ service LlamaService {
   rpc DoLoadModel (DoLoadModelRequest) returns (DoLoadModelResponse) {}
 
   rpc DoAddTokensAndCompute (DoAddTokensAndComputeRequest) returns (DoAddTokensAndComputeResponse) {}
+  rpc DoPredict (DoPredictRequest) returns (DoPredictResponse) {}
 
   rpc DoSaveCheckpoint (DoSaveCheckpointRequest) returns (DoSaveCheckpointResponse) {}
   rpc DoRestoreCheckpoint (DoRestoreCheckpointRequest) returns (DoRestoreCheckpointResponse) {}
@@ -18,6 +19,11 @@ message SessionInfo {
     string session_id = 1;
     string model_name = 2;
     uint64 start_time_unix_nanos = 3;
+    ModelInfo model_info = 4;
+}
+
+message ModelInfo {
+    string model_name = 1;
 }
 
 message TokenizeRequest {
@@ -96,4 +102,56 @@ message DoAddTokensAndComputeResponse {
     uint32 remaining_context_size_tokens = 3;
 
     SessionInfo session_info = 4;
+}
+
+message SessionRestoreInfo {
+    string session_id = 1;
+    string model_name = 2;
+}
+
+message TokenSet {
+    repeated uint32 token_id = 1;
+}
+
+message LogitFilter {
+    oneof kind {
+        TokenSet include_only_tokens = 1;
+        TokenSet exclude_tokens = 2;
+    }
+}
+
+message LlamaRepetitionPenalty {
+    float intensity = 1;
+}
+
+message LogitProcessing {
+    uint32 top_n = 1;
+
+    repeated LogitFilter token_filter = 2;
+
+    LlamaRepetitionPenalty llama_repetition_penalty = 3;
+}
+
+message SessionHint {
+    string session_id = 1;
+}
+
+message DoPredictRequest {
+    // The model may be loaded on the fly, or rewinded.
+    // Or a saved state may be loaded if one exists.
+
+    ModelInfo model_info = 1;
+    SessionHint session_hint = 2;
+
+    InputTokens full_context = 3;
+
+    LogitProcessing logit_processing = 4;
+}
+
+message DoPredictResponse {
+    SessionInfo session_info = 1;
+
+    InputTokenSequence full_input_context = 2;
+
+    repeated TokenLogit next_token_logit = 3;
 }

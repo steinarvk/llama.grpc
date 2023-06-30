@@ -16,6 +16,9 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/log/check.h"
 #include "absl/time/time.h"
 #include "absl/log/initialize.h"
 #include "absl/strings/str_format.h"
@@ -28,6 +31,9 @@
 #include <grpcpp/health_check_service_interface.h>
 
 #include "proto/llama.grpc.pb.h"
+#include "proto/internal/llamagrpc_internal.pb.h"
+
+#include "server/storage.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -214,8 +220,33 @@ class LlamaManager {
             return computed_context;
         }
 
+        int get_common_prefix_size(const std::vector<llama_token>& other_tokens) {
+            size_t i = 0;
+
+            std::vector<llama_token> all_context;
+            all_context.insert(all_context.end(), computed_context.begin(), computed_context.end());
+            all_context.insert(all_context.end(), pending_context.begin(), pending_context.end());
+
+            for (; i < all_context.size() && i < other_tokens.size(); i++) {
+                if (all_context[i] != other_tokens[i]) {
+                    break;
+                }
+            }
+
+            return (int) i;
+        }
+
         int get_remaining_context_size() {
             return context_size_tokens - (computed_context.size() + pending_context.size());
+        }
+
+        void truncate_computed_context(int n_tokens) {
+            size_t sz = (size_t) n_tokens;
+            // If we have more than n_tokens in the computed context, truncate it by erasing the excess tokens at the end
+            if (computed_context.size() > sz) {
+                computed_context.erase(computed_context.begin() + sz, computed_context.end());
+                CHECK(computed_context.size() == sz);
+            }
         }
 
         void clear_context() {
@@ -231,6 +262,17 @@ class LlamaManager {
 
         void compute_logits() {
             const int n_batch_size = absl::GetFlag(FLAGS_batch_size);
+
+            if (pending_context.empty()) {
+                llama_token *tokens = computed_context.data();
+                tokens += computed_context.size() - 1;
+                LOG(INFO) << "Re-evaluating token " << *tokens;
+                if (llama_eval(ctx, tokens, 1, computed_context.size() - 1, number_of_threads) != 0) {
+                    throw std::runtime_error("Failed to evaluate tokens");
+                }
+                LOG(INFO) << "Re-evaluated one token.";
+                return;
+            }
 
             while (pending_context.size() > 0) {
                 const int n_tokens = std::min((int)pending_context.size(), n_batch_size);
@@ -373,6 +415,140 @@ public:
     return Status::OK;
   }
 
+  Status DoPredict(ServerContext* context, const ::llamagrpc::DoPredictRequest* request, ::llamagrpc::DoPredictResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
+    std::string session_id = request->session_hint().session_id();
+
+    // Do we have a session, meaning we don't need to reload the model?
+
+    if (!session_id.empty() && EnsureSessionLoaded(session_id).ok()) {
+        // Session is already loaded, so we can just use it.
+    } else {
+        // TODO: as long as there's only 1 session active, we could actually save time here by not reloading the model
+        //       if the new model requested is the same as the old model.
+
+        const int n_context = absl::GetFlag(FLAGS_context_size);
+
+        std::string model_name = request->model_info().model_name();
+        std::string model_filename = map_model_filename(model_name);
+
+        llama_manager.reset(new LlamaManager(n_threads, n_context, model_name, model_filename));
+
+        session_id = llama_manager->get_session_id();
+    }
+
+    // Now for the tokens.
+
+    auto maybe_tokenized = ConvertInputTokens(request->full_context());
+    if (!maybe_tokenized.ok()) {
+        return Status(StatusCode::INVALID_ARGUMENT, "Failed to tokenize input");
+    }
+    std::vector<llama_token> tokenized = maybe_tokenized.value();
+
+    const int common_prefix_size = llama_manager->get_common_prefix_size(tokenized);
+
+    CHECK(common_prefix_size <= (int) tokenized.size());
+
+    llama_manager->truncate_computed_context(common_prefix_size);
+
+    // TODO: see if we can do better by loading a snapshot.
+
+    const int n_input_tokens = (int) tokenized.size();
+
+    if (common_prefix_size < n_input_tokens) {
+        for (int i = common_prefix_size; i < n_input_tokens; i++) {
+            llama_manager->add_token(tokenized[i]);
+        }
+    }
+
+    LOG(INFO) << "Computing logits";
+
+    llama_manager->compute_logits();
+
+    const int n_vocab = llama_n_vocab(llama_manager->get_context());
+
+    float* logits = llama_get_logits(llama_manager->get_context());
+
+    LOG(INFO) << "Done computing logits";
+
+    const ::llamagrpc::LogitProcessing& logit_processing = request->logit_processing();
+
+    std::vector<llama_token_data> candidates;
+    candidates.reserve(n_vocab);
+    for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+        candidates.emplace_back(llama_token_data{token_id, logits[token_id], 0.0f});
+    }                                                                   
+
+    llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
+
+    if (logit_processing.has_llama_repetition_penalty()) {
+        std::vector<llama_token> previous_tokens = llama_manager->get_computed_context();
+        llama_context* ctx = llama_manager->get_context();
+
+        float nl_logit = logits[llama_token_nl()];
+        const float repeat_penalty = logit_processing.llama_repetition_penalty().intensity();
+        llama_sample_repetition_penalty(ctx, &candidates_p, previous_tokens.data(), previous_tokens.size(), repeat_penalty);
+        logits[llama_token_nl()] = nl_logit;
+    } else {
+        LOG(WARNING) << "No llama_repetition_penalty specified";
+    }
+
+    // TODO apply filters
+
+    std::priority_queue<std::pair<float, llama_token>> top_tokens;
+
+    for (llama_token_data token_data : candidates) {
+        float logit = token_data.logit;
+        llama_token token_id = token_data.id;
+
+        top_tokens.push(std::make_pair(logit, token_id));
+    }
+
+    int n = logit_processing.top_n() == 0 ? n_vocab : logit_processing.top_n();
+
+    LOG(INFO) << "Selecting top " << n << " tokens";
+
+    for (int i = 0; i < n; i++) {
+        std::pair<float, llama_token> top_token = top_tokens.top();
+
+        const char *token_str = llama_token_to_str(llama_manager->get_context(), top_token.second);
+
+        ::llamagrpc::TokenLogit* logit = reply->add_next_token_logit();
+        logit->set_logit(top_token.first);
+        logit->mutable_token()->set_token_id(top_token.second);
+        logit->mutable_token()->set_token_str(token_str);
+
+        top_tokens.pop();
+    }
+
+    reply->mutable_session_info()->CopyFrom(llama_manager->get_session_info());
+
+    for (llama_token token_id : llama_manager->get_computed_context()) {
+        uint32_t token_id_u32 = (uint32_t) token_id;
+        reply->mutable_full_input_context()->add_token_id(token_id_u32);
+    }
+
+    return Status::OK;
+  }
+
+  absl::StatusOr<std::vector<llama_token>> ConvertInputTokens(const ::llamagrpc::InputTokens& input_tokens) {
+    if (input_tokens.has_str()) {
+        std::string untokenized_string = input_tokens.str();
+        return simple_tokenize(llama_manager->get_context(), untokenized_string);
+    }
+
+    if (input_tokens.has_token_ids()) {
+        std::vector<llama_token> tokenized;
+        for (int i = 0; i < input_tokens.token_ids().token_id_size(); i++) {
+            tokenized.push_back((llama_token) input_tokens.token_ids().token_id(i));
+        }
+        return tokenized;
+    }
+
+    return absl::Status(absl::StatusCode::kInvalidArgument, "No input tokens specified");
+  }
+
   Status DoAddTokensAndCompute(ServerContext* context, const ::llamagrpc::DoAddTokensAndComputeRequest* request, ::llamagrpc::DoAddTokensAndComputeResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
@@ -496,6 +672,18 @@ public:
 };
 
 void RunServer(uint16_t port) {
+  std::unique_ptr<llamagrpc::Storage> storage (llamagrpc::Storage::CreateFromFlags());
+
+#if 0
+  llamagrpc_internal::SnapshotDesc desc;
+  desc.set_snapshot_relative_path("hello/mysnapshot.llamagrpc_snapshot");
+  for (int i = 0; i < 3; i++) {
+    desc.mutable_tokens()->add_token_id(i);
+  }
+
+  CHECK_OK(storage->RegisterSnapshot(desc));
+#endif
+
   std::string server_address = absl::StrFormat("0.0.0.0:%d", port);
   LlamaServiceImpl service;
 
@@ -516,10 +704,10 @@ void RunServer(uint16_t port) {
 }
 
 int main(int argc, char** argv) {
-  absl::ParseCommandLine(argc, argv);
-
   LOG(INFO) << "Starting up.";
 
+  absl::ParseCommandLine(argc, argv);
+  
   RunServer(absl::GetFlag(FLAGS_port));
   return 0;
 }
