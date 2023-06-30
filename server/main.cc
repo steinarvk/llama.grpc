@@ -631,7 +631,10 @@ public:
   absl::StatusOr<std::vector<llama_token>> ConvertInputTokens(const ::llamagrpc::InputTokens& input_tokens) {
     if (input_tokens.has_str()) {
         std::string untokenized_string = input_tokens.str();
-        return simple_tokenize(llama_manager->get_context(), untokenized_string);
+
+        std::vector<llama_token> tokenized = simple_tokenize(llama_manager->get_context(), untokenized_string);
+        tokenized.insert(tokenized.begin(), llama_token_bos());
+        return tokenized;
     }
 
     if (input_tokens.has_token_ids()) {
