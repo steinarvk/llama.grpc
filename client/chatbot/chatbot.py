@@ -10,6 +10,8 @@ from client.chatbot.proto import chatbot_pb2
 
 import dataclasses
 import grpc
+import uuid
+import os
 import shlex
 import shutil
 import math
@@ -22,6 +24,9 @@ flags.DEFINE_string("scenario", "scenario.pb_text", "Scenario to run.")
 flags.DEFINE_string("server", "localhost:50051", "Address of server to connect to.")
 flags.DEFINE_string("model_name", "13B", "Model to request.")
 flags.DEFINE_string("output_transcript", "", "Save transcript of conversation to this file.")
+flags.DEFINE_string("checkpoint_filename", "", "Alternate filename for checkpoint file.")
+flags.DEFINE_boolean("write_checkpoint", True, "Write checkpoint files adjacent to scenario file.")
+flags.DEFINE_boolean("recover_checkpoint", True, "Recover from last checkpoint if present.")
 
 def max_prompt_size(scenario):
     n = 0
@@ -172,7 +177,7 @@ def is_acceptable_token(token, exclude=set(), require_prefix="", forbid_prefixes
     
     return True
 
-def choose_softmax(logits, temperature=0.5, exclude=set(), accept_prefixes: list[str] | None = None, text_so_far: str = ""):
+def choose_softmax(logits, temperature, exclude=set(), accept_prefixes: list[str] | None = None, text_so_far: str = ""):
     choices = []
 
     for logit in logits:
@@ -206,7 +211,7 @@ def remaining_options_for_prefixes(options, text_so_far):
             rv.append(opt)
     return rv
 
-def generate_line(predict_with_extra_tokens, input_tokens: list[int], accept_speakers: dict[str, chatbot_pb2.Speaker]):
+def generate_line(predict_with_extra_tokens, input_tokens: list[int], accept_speakers: dict[str, chatbot_pb2.Speaker], temperature: float):
     # Note: there is a subtlety here. Why not just f"{human_speaker}: {input_line}\n{bot_speaker}: "?
     #       The reason is that there is no guarantee that the following will hold:
     #            Tokenize(s1 + s2) = Tokenize(s1) + Tokenize(s2)        [NOT true in general]
@@ -232,7 +237,7 @@ def generate_line(predict_with_extra_tokens, input_tokens: list[int], accept_spe
         if result.endswith("\n"):
             break
         exclude = {13} if not result else set()
-        chosen_token = choose_softmax(logits, temperature=0.5, exclude=exclude, accept_prefixes=prefixes, text_so_far=result)
+        chosen_token = choose_softmax(logits, temperature=temperature, exclude=exclude, accept_prefixes=prefixes, text_so_far=result)
         logging.debug(f"Chose token: {chosen_token}")
         input_str = chosen_token.token_str.decode("utf-8")
 
@@ -264,13 +269,19 @@ def generate_line(predict_with_extra_tokens, input_tokens: list[int], accept_spe
     return result, generated_tokens, chosen_speaker
 
 def format_suitable_prompt(scenario, target_context_size, count_tokens):
-    min_size = 2
     max_size = max_prompt_size(scenario)
+    min_size = 2
 
+    if max_size <= min_size:
+        return format_initial_prompt(scenario, size=max_size)
+    
     assert count_tokens(format_initial_prompt(scenario, size=min_size)) <= target_context_size
+
 
     lo = min_size
     hi = max_size + 1
+
+    logging.info("min_size=%d, max_size=%d", min_size, max_size)
 
     assert hi >= lo
 
@@ -291,12 +302,14 @@ def format_suitable_prompt(scenario, target_context_size, count_tokens):
     return prompt
 
 class ConversationChunk:
-    def __init__(self, text: str, tokens: list[int], speaker: str | None, ignored: bool = False, stripped_text: str | None = None):
+    def __init__(self, text: str, tokens: list[int], speaker: str | None, ignored: bool = False, stripped_text: str | None = None, provenance=None, labels=None):
         self.text = text
         self.tokens = tokens
         self.speaker = speaker
         self.ignored = ignored
         self.stripped_text = stripped_text or text
+        self.provenance = provenance
+        self.labels = labels or chatbot_pb2.Labels()
     
     def __repr__(self):
         return f"ConversationChunk(text={repr(self.text)}, tokens={repr(self.tokens)}, speaker={repr(self.speaker)}, ignored={repr(self.ignored)})"
@@ -305,15 +318,22 @@ class ConversationState:
     def __init__(self, fixed_prompt: ConversationChunk):
         self.fixed_prompt = fixed_prompt
         self.chunks = []
+        self.undo_count = [0]
 
     def add_chunk(self, chunk: ConversationChunk):
         self.chunks.append(chunk)
+        self.undo_count.append(0)
 
     def try_pop_chunk(self):
         if self.chunks:
             self.chunks.pop()
+            self.undo_count.pop()
+            self.undo_count[-1] += 1
             return True
         return False
+
+    def get_number_of_attempts(self):
+        return self.undo_count[-1] + 1
 
     def get_tokens(self) -> list[int]:
         tokens = list(self.fixed_prompt.tokens)
@@ -345,26 +365,47 @@ class ConversationState:
                 sys.stdout.write(chunk.text)
     
     def proto_lines(self, exclude_ignored: bool = True):
-        return [chatbot_pb2.Line(speaker=chunk.speaker.name, text=chunk.stripped_text) for chunk in self.chunks if not (exclude_ignored and chunk.ignored)]
-
+        return [chatbot_pb2.Line(
+            speaker=chunk.speaker,
+            text=chunk.stripped_text,
+            provenance=chunk.provenance,
+            labels=chunk.labels if len(chunk.labels.percentile_rating) else None,
+        ) for chunk in self.chunks if not (exclude_ignored and chunk.ignored)]
 
 def main(argv):
   del argv  # Unused.
 
-  with open(FLAGS.scenario) as f:
+  load_from_filename = FLAGS.scenario
+  checkpoint_suffix = ".checkpoint.pb_text"
+  checkpoint_filename = load_from_filename + checkpoint_suffix
+  if FLAGS.checkpoint_filename:
+    checkpoint_filename = FLAGS.checkpoint_filename
+
+  if FLAGS.recover_checkpoint:
+    if os.path.exists(checkpoint_filename):
+        logging.info(f"Loading checkpoint from {checkpoint_filename}")
+        load_from_filename = checkpoint_filename
+
+  with open(load_from_filename) as f:
     scenario = text_format.Parse(f.read(), chatbot_pb2.Scenario())
   
   logging.info(f"Connecting to: {FLAGS.server}")
   with grpc.insecure_channel(FLAGS.server) as channel:
     stub = llama_pb2_grpc.LlamaServiceStub(channel)
 
-    response = stub.DoLoadModel(llama_pb2.DoLoadModelRequest(model_name=FLAGS.model_name))
-    session_id = response.session_info.session_id
-    logging.info(f"Loaded model; session ID: {session_id}")
+    session_hint = llama_pb2.SessionHint()
+
+    req = llama_pb2.DoPredictRequest()
+    req.model_info.model_name = FLAGS.model_name
+    def tokenize(s):
+        tokreq = llama_pb2.TokenizeRequest(text=s)
+        tokreq.model_info.model_name = FLAGS.model_name
+        tokreq.session_hint.CopyFrom(session_hint)
+        response = stub.Tokenize(tokreq)
+        return response.token
 
     def count_tokens(s):
-        response = stub.Tokenize(llama_pb2.TokenizeRequest(text=s))
-        return len(response.token)
+        return len(tokenize(s))
 
     min_size = 2
     max_size = max_prompt_size(scenario)
@@ -378,7 +419,7 @@ def main(argv):
 
     prompt = format_suitable_prompt(scenario_without_chat, max_fixed_prompt_size, count_tokens)
     BOS = 1
-    prompt_tokens = [BOS] + [token.token_id for token in stub.Tokenize(llama_pb2.TokenizeRequest(text=prompt)).token]
+    prompt_tokens = [BOS] + [token.token_id for token in tokenize(prompt)]
 
     speakers = parse_speakers(scenario.setup.context.speaker)
 
@@ -387,12 +428,14 @@ def main(argv):
         speaker = speakers[line.speaker]
         text = line.text
         formatted_line = f"{speaker.affixes.prefix}{text}{speaker.affixes.suffix}\n"
-        tok = [token.token_id for token in stub.Tokenize(llama_pb2.TokenizeRequest(text=formatted_line)).token]
+        tok = [token.token_id for token in tokenize(formatted_line)]
         convo.add_chunk(ConversationChunk(
             text=formatted_line,
             stripped_text=text,
             speaker=speaker.name,
             tokens=tok,
+            provenance=line.provenance,
+            labels=line.labels,
         ))
 
     tokens_slack = 256
@@ -407,6 +450,7 @@ def main(argv):
     req.logit_processing.top_n = 40
     req.logit_processing.llama_repetition_penalty.intensity = 1.1
 
+    convo.limit_context_size(target_context_size)
     req.full_context.token_ids.token_id[:] = convo.get_tokens()
 
     n_tokens = len(prompt_tokens)
@@ -426,31 +470,40 @@ def main(argv):
 
     metadata = ""
 
-    def add_line(speaker, text):
+    def add_line(speaker, text, provenance=None):
         scenario.setup.line.add(speaker=speaker.name, text=text)
         formatted_line = f"{speaker.affixes.prefix}{text}{speaker.affixes.suffix}\n"
         sys.stdout.write(formatted_line)
         sys.stdout.flush()
 
-        tok = [token.token_id for token in stub.Tokenize(llama_pb2.TokenizeRequest(text=formatted_line)).token]
+        tok = [token.token_id for token in tokenize(formatted_line)]
 
         return ConversationChunk(
             text=formatted_line,
             stripped_text=text,
             speaker=speaker.name,
             tokens=tok,
+            provenance=provenance,
         )
     
     def sync_scenario():
         prompt_tokens[:] = convo.get_tokens()
-        scenario.setup.line[:] = convo.proto_lines(exclude_ignored=False)
+        scenario.setup.line.clear()
+        scenario.setup.line.extend(convo.proto_lines(exclude_ignored=False))
+
+        value = text_format.MessageToString(scenario)
 
         if FLAGS.output_transcript:
-            value = text_format.MessageToString(scenario)
             tmp = f"{FLAGS.output_transcript}.tmp"
             with open(tmp, "w") as f:
                 f.write(value)
             shutil.move(tmp, FLAGS.output_transcript)
+
+        if FLAGS.write_checkpoint:
+            tmp = f"{checkpoint_filename}.tmp"
+            with open(tmp, "w") as f:
+                f.write(value)
+            shutil.move(tmp, checkpoint_filename)
 
     def predict_with_extra_tokens(extra_tokens):
         subreq = llama_pb2.DoPredictRequest()
@@ -459,14 +512,47 @@ def main(argv):
         response = stub.DoPredict(subreq)
         return response.next_token_logit
 
+    alternatives = []
+
+    def make_human_provenance():
+        rv = chatbot_pb2.Provenance(
+            provenance_type=chatbot_pb2.ProvenanceType.PROVENANCE_MANUAL,
+            uuid=str(uuid.uuid4()),
+            timestamp_unix_seconds=int(time.time()),
+            attempt_count=convo.get_number_of_attempts(),
+            discarded_alternative=list(alternatives),
+        )
+        alternatives.clear()
+        return rv
+
+    def make_generated_provenance(*, duration_seconds: float, temperature: float, partially_generated: bool = False):
+        rv = chatbot_pb2.Provenance(
+            provenance_type=chatbot_pb2.ProvenanceType.PROVENANCE_GENERATED if not partially_generated else chatbot_pb2.ProvenanceType.PROVENANCE_PARTIALLY_GENERATED,
+            uuid=str(uuid.uuid4()),
+            model_info=chatbot_pb2.ModelInfo(
+                model_name=FLAGS.model_name,
+            ),
+            timestamp_unix_seconds=int(time.time()),
+            generation_time_seconds=duration_seconds,
+            attempt_count=convo.get_number_of_attempts(),
+            temperature=temperature,
+            discarded_alternative=list(alternatives),
+        )
+        alternatives.clear()
+        return rv
+
+    temperature = 0.5
 
     while True:
         bot_speakers = {speaker.name: speaker for speaker in speakers.values() if not speaker.human}
         human_speakers = [speaker for speaker in speakers.values() if speaker.human]
         assert len(human_speakers) <= 1
 
+        input_tokens = []
         if human_speakers:
             while True:
+                sync_scenario()
+
                 sys.stdout.flush()
                 input_ent = read_input(metadata, speakers=list(speakers.values()))
                 sys.stdout.write("\033[1A\033[2K")
@@ -474,18 +560,40 @@ def main(argv):
                     case None:
                         break
                     case ChatInput(speaker, input_line):
-                        convo.add_chunk(add_line(speaker, input_line))
+                        convo.add_chunk(add_line(speaker, input_line, provenance=make_human_provenance()))
                         if speaker.human:
                             break
                     case Command("back", []):
                         convo.try_pop_chunk()
+                        line_proto_of_undone = chatbot_pb2.Line()
+                        line_proto_of_undone.CopyFrom(scenario.setup.line[-1])
+                        alternatives.append(line_proto_of_undone)
                         convo.print_summary()
                     case Command("addspeaker", [speaker_name]):
                         new_speaker = chatbot_pb2.Speaker(name=speaker_name)
                         fixed_speakers = parse_speakers([new_speaker])
                         speakers.update(fixed_speakers)
                         scenario.setup.context.speaker.append(new_speaker)
-                        print(fixed_speakers)
+                    case Command("tokenize", [text]):
+                        for token in tokenize(text):
+                            print(token)
+                    case Command("forceprefix", [text]):
+                        # TODO this has the tokenization subtlety problem
+                        input_tokens = [token.token_id for token in tokenize(text)]
+                        break
+                    case Command("set-temperature", [arg]):
+                        new_temperature = float(arg)
+                        logging.info(f"Changing temperature from {temperature} to {new_temperature}")
+                        temperature = new_temperature
+                    case Command("rate", [rating]):
+                        if not rating.endswith("/100"):
+                            print("Rating must be nn/100")
+                            continue
+                        rating = int(rating[:-4])
+                        if rating < 0 or rating > 100:
+                            print(f"Rating must be nn/100; {rating} is out of range")
+                            continue
+                        convo.chunks[-1].labels.percentile_rating.append(chatbot_pb2.PercentileRating(value=rating))
                     case Command(cmd, _):
                         print(f"Unknown command: {cmd}")
                     case _:
@@ -496,15 +604,26 @@ def main(argv):
         sys.stdout.write("...\n")
         sys.stdout.flush()
 
+        force_prefix = input_tokens
+
         t0 = time.time()
-        output_line, output_tokens, chosen_speaker = generate_line(predict_with_extra_tokens, input_tokens=[], accept_speakers=bot_speakers)
+        output_line, output_tokens, chosen_speaker = generate_line(
+            predict_with_extra_tokens,
+            input_tokens=force_prefix,
+            accept_speakers=bot_speakers,
+            temperature=temperature,
+        )
         duration = time.time() - t0
         duration_ms = int(duration * 1000)
 
         sys.stdout.write("\033[1A\033[2K")
         sys.stdout.flush()
 
-        convo.add_chunk(add_line(chosen_speaker, output_line))
+        convo.add_chunk(add_line(chosen_speaker, output_line, provenance=make_generated_provenance(
+            partially_generated=bool(force_prefix),
+            duration_seconds=duration,
+            temperature=temperature,
+        )))
         sync_scenario()
 
         current_context_size = len(prompt_tokens)

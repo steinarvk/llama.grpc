@@ -162,7 +162,7 @@ class LlamaManager {
     private:
         const int number_of_threads;
         const int context_size_tokens;
-        const std::string session_id;
+        std::string session_id;
 
         ::llamagrpc::SessionInfo session_info;
 
@@ -204,6 +204,10 @@ class LlamaManager {
             }
         }
 
+        const int get_context_size() {
+            return context_size_tokens;
+        }
+
         const ::llamagrpc::SessionInfo& get_session_info() {
             return session_info;
         }
@@ -220,15 +224,21 @@ class LlamaManager {
             return computed_context;
         }
 
+        bool is_model(const llamagrpc::ModelInfo& model_info) {
+            return model_info.model_name() == session_info.model_name();
+        }
+
+        std::string regenerate_session_id() {
+            session_id = generate_session_id();
+            session_info.set_session_id(session_id);
+            return session_info.session_id();
+        }
+
         int get_common_prefix_size(const std::vector<llama_token>& other_tokens) {
             size_t i = 0;
 
-            std::vector<llama_token> all_context;
-            all_context.insert(all_context.end(), computed_context.begin(), computed_context.end());
-            all_context.insert(all_context.end(), pending_context.begin(), pending_context.end());
-
-            for (; i < all_context.size() && i < other_tokens.size(); i++) {
-                if (all_context[i] != other_tokens[i]) {
+            for (; i < computed_context.size() && i < other_tokens.size(); i++) {
+                if (computed_context[i] != other_tokens[i]) {
                     break;
                 }
             }
@@ -256,12 +266,33 @@ class LlamaManager {
         }
 
         void add_token(llama_token tok) {
-            LOG(INFO) << "Adding token: " << tok << "(string form:" << llama_token_to_str(ctx, tok) << ")";
+            if (tok == llama_token_bos()) {
+                const int total_current_queue = (int) (computed_context.size() + pending_context.size());
+                bool do_ignore = false;
+
+                if (total_current_queue == 1) {
+                    if (computed_context.size() == 1 && computed_context[0] == llama_token_bos()) {
+                        do_ignore = true;
+                    }
+                    if (pending_context.size() == 1 && pending_context[0] == llama_token_bos()) {
+                        do_ignore = true;
+                    }
+                }
+
+                if (do_ignore) {
+                    LOG(INFO) << "Ignoring initial BOS token";
+                    return;
+                }
+            }
+
+            DLOG(INFO) << "Adding token: " << tok << "(string form:" << llama_token_to_str(ctx, tok) << ")";
             pending_context.push_back(tok);
         }
 
         void compute_logits() {
             const int n_batch_size = absl::GetFlag(FLAGS_batch_size);
+
+            absl::Time t0 = absl::Now();
 
             if (pending_context.empty()) {
                 llama_token *tokens = computed_context.data();
@@ -270,9 +301,20 @@ class LlamaManager {
                 if (llama_eval(ctx, tokens, 1, computed_context.size() - 1, number_of_threads) != 0) {
                     throw std::runtime_error("Failed to evaluate tokens");
                 }
-                LOG(INFO) << "Re-evaluated one token.";
+
+                absl::Time t1 = absl::Now();
+                LOG(INFO) << "Re-evaluated one token in " << absl::ToDoubleMilliseconds(t1 - t0) << "ms";
                 return;
             }
+
+            const int pending_context_size = (int) pending_context.size();
+
+            std::string all_pending_bytes;
+            for (llama_token tok : pending_context) {
+                std::string tok_bytes (llama_token_to_str(ctx, tok));
+                all_pending_bytes.append(tok_bytes);
+            }
+            LOG(INFO) << "Evaluating pending context of " << pending_context_size << " tokens in batches of " << n_batch_size << " tokens (building on top of computed context of " << computed_context.size() << "), new bytes are: " << all_pending_bytes;
 
             while (pending_context.size() > 0) {
                 const int n_tokens = std::min((int)pending_context.size(), n_batch_size);
@@ -280,8 +322,15 @@ class LlamaManager {
                 llama_token *tokens = pending_context.data();
 
                 LOG(INFO) << "Evaluating " << n_tokens << " tokens after computed context of " << computed_context.size() << " tokens";
+                const int show_max_seq = 5;
+                const bool show_all = n_tokens <= (show_max_seq * 2);
                 for (int i = 0; i < n_tokens; i++) {
-                    LOG(INFO) << "token " << i << ": " << tokens[i] << "[" << llama_token_to_str(ctx, tokens[i]) << "]";
+                    bool should_show = show_all || (i < show_max_seq) || (i >= (n_tokens - show_max_seq));
+                    if (should_show) {
+                        LOG(INFO) << "token " << i << ": " << tokens[i] << "[" << llama_token_to_str(ctx, tokens[i]) << "]";
+                    } else if (i == show_max_seq) {
+                        LOG(INFO) << "...";
+                    }
                 }
 
                 if (llama_eval(ctx, tokens, n_tokens, computed_context.size(), number_of_threads) != 0) {
@@ -293,6 +342,10 @@ class LlamaManager {
                 }
                 pending_context.erase(pending_context.begin(), pending_context.begin() + n_tokens);
             }
+
+            absl::Time t1 = absl::Now();
+            double elapsed_ms = absl::ToDoubleMilliseconds(t1 - t0);
+            LOG(INFO) << "Evaluated " << pending_context_size << " tokens in " << elapsed_ms << "ms; " << (1000.0 * ((double) pending_context_size) / elapsed_ms) << " tokens/sec";
         }
 
         void save_checkpoint(std::string filename) {
@@ -360,9 +413,11 @@ public:
   Status Tokenize(ServerContext* context, const ::llamagrpc::TokenizeRequest* request, ::llamagrpc::TokenizeResponse* reply) override {
     absl::MutexLock lock(&mutex);
 
-    Status status = EnsureSessionLoaded("");
-    if (!status.ok()) {
-        return status;
+    {
+        auto status = WithLockPrepareModel(request->model_info(), request->session_hint(), false);
+        if (!status.ok()) {
+            return status;
+        }
     }
 
     const std::string text = request->text();
@@ -415,40 +470,80 @@ public:
     return Status::OK;
   }
 
-  Status DoPredict(ServerContext* context, const ::llamagrpc::DoPredictRequest* request, ::llamagrpc::DoPredictResponse* reply) override {
-    absl::MutexLock lock(&mutex);
+  grpc::Status WithLockPrepareModel(const ::llamagrpc::ModelInfo& model_info, const ::llamagrpc::SessionHint& session_hint, bool need_session = true) {
+    std::string session_id = session_hint.session_id();
 
-    std::string session_id = request->session_hint().session_id();
+    if (model_info.model_name().empty()) {
+        return Status(StatusCode::INVALID_ARGUMENT, "model_name is required");
+    }
 
     // Do we have a session, meaning we don't need to reload the model?
 
     if (!session_id.empty() && EnsureSessionLoaded(session_id).ok()) {
         // Session is already loaded, so we can just use it.
-    } else {
+    } else if (llama_manager && llama_manager->is_model(model_info)) {
         // TODO: as long as there's only 1 session active, we could actually save time here by not reloading the model
         //       if the new model requested is the same as the old model.
+        std::string old_session_id = llama_manager->get_session_id();
 
+        if (need_session) {
+            session_id = llama_manager->regenerate_session_id();
+            LOG(INFO) << "Reusing old session " << old_session_id << " as " << session_id;
+        }
+    } else {
         const int n_context = absl::GetFlag(FLAGS_context_size);
 
-        std::string model_name = request->model_info().model_name();
+        std::string model_name = model_info.model_name();
         std::string model_filename = map_model_filename(model_name);
+
+        LOG(INFO) << "Creating new session"; 
 
         llama_manager.reset(new LlamaManager(n_threads, n_context, model_name, model_filename));
 
         session_id = llama_manager->get_session_id();
+
+        LOG(INFO) << "Initialized model for new session " << session_id;
+    }
+
+    return Status::OK;
+  }
+
+  Status DoPredict(ServerContext* context, const ::llamagrpc::DoPredictRequest* request, ::llamagrpc::DoPredictResponse* reply) override {
+    absl::MutexLock lock(&mutex);
+
+    {
+        auto status = WithLockPrepareModel(request->model_info(), request->session_hint(), true);
+        if (!status.ok()) {
+            return status;
+        }
     }
 
     // Now for the tokens.
+
+    const int model_context_size = llama_manager->get_context_size();
+
+    LOG(INFO) << "Tokenizing input; expecting at most " << model_context_size << " tokens";
 
     auto maybe_tokenized = ConvertInputTokens(request->full_context());
     if (!maybe_tokenized.ok()) {
         return Status(StatusCode::INVALID_ARGUMENT, "Failed to tokenize input");
     }
     std::vector<llama_token> tokenized = maybe_tokenized.value();
+    const int actual_tokens = (int) tokenized.size();
 
+    if (actual_tokens > model_context_size) {
+        return Status(StatusCode::INVALID_ARGUMENT, "Too many tokens");
+    }
+    if (actual_tokens == 0) {
+        return Status(StatusCode::INVALID_ARGUMENT, "No tokens");
+    }
+
+    LOG(INFO) << "Getting common prefix size with new " << tokenized.size() << " tokens";
     const int common_prefix_size = llama_manager->get_common_prefix_size(tokenized);
 
     CHECK(common_prefix_size <= (int) tokenized.size());
+
+    LOG(INFO) << "Truncating context to " << common_prefix_size << " tokens";
 
     llama_manager->truncate_computed_context(common_prefix_size);
 
@@ -457,6 +552,7 @@ public:
     const int n_input_tokens = (int) tokenized.size();
 
     if (common_prefix_size < n_input_tokens) {
+        LOG(INFO) << "Adding more tokens from " << common_prefix_size << " to " << n_input_tokens;
         for (int i = common_prefix_size; i < n_input_tokens; i++) {
             llama_manager->add_token(tokenized[i]);
         }

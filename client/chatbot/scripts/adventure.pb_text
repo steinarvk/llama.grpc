@@ -3,7 +3,7 @@ setup {
     speaker {
       name: "Player"
       affixes {
-        prefix: ">>>"
+        prefix: ">>> "
       }
       human: true
     }
@@ -13,11 +13,44 @@ setup {
         prefix: "| "
       }
     }
-    description: "A record of a play session of an interactive fiction game."
+    description: "Aetheria's Enigma - an interactive fiction game. In the interactive fiction text-adventure game, \"Aetheria's Enigma\", you step into the worn boots of Ellara, a young mage just finishing her studies at the arcane academy of Elaris."
+  }
+  # Note: these are prompt lines, not generated with llama-65B.
+  line {
+    speaker: "Game"
+    text: "You've always been adept at reading the Aether, the magical energy that permeates the world of Aetheria, but your ability to manipulate it is still raw and unpredictable. Your journey begins in your rustic chamber at the academy. It's filled with a mixture of old tomes, dried herbs, a small bed, and an arcane workbench, all bathed in the soft light emanating from the mystical Hearthstone sitting on your desk."
+  }
+  line {
+    speaker: "Player"
+    text: "inspect hearthstone"
   }
   line {
     speaker: "Game"
-    text: "You are standing in a forest in front of a dark cave."
+    text: "The Hearthstone is a small, pulsating crystal, its energy akin to the Aether itself. As you look closer, you notice it emits a warm glow that lights up the entire room. The Hearthstone serves as a personal reservoir for mages to store extra Aether, which can be used when their own energy runs low."
+  }
+  line {
+    speaker: "Player"
+    text: "pick up hearthstone"
+  }
+  line {
+    speaker: "Game"
+    text: "You pick up the Hearthstone. Its warmth spreads up your arm, a comforting presence. You feel its power thrumming in sync with the Aether that flows within you. The Hearthstone is now in your inventory."
+  }
+  line {
+    speaker: "Player"
+    text: "look around room"
+  }
+  line {
+    speaker: "Game"
+    text: "Your chamber is humble but comforting. The walls are lined with bookshelves teeming with ancient books and scrolls about arcane arts and Aetheria's history. The herbs on the workbench emit a strong, but not unpleasant, aroma. A single window overlooking the academy's courtyard lets in a bit of the moon's silver light. Your small bed, though a bit ragged, looks inviting after a day of rigorous magical studies."
+  }
+  line {
+    speaker: "Player"
+    text: "get book on desk and read it"
+  }
+  line {
+    speaker: "Game"
+    text: "You pick up an old tome titled \"Aether and Elemental Conjuring.\" Reading it, you learn about the nuances of conjuring elemental beings from the Aether - a skill you're still mastering. A passage about conjuring a fire elemental particularly catches your eye; you commit it to memory for future use."
   }
   line {
     speaker: "Player"
@@ -25,30 +58,14 @@ setup {
   }
   line {
     speaker: "Game"
-    text: "You are carrying: a sword, a shield, and a lantern."
+    text: "You rummage through your belongings. In your inventory you currently have: 1. Hearthstone: A small, glowing crystal used for storing Aether. 2. Student Robes: Your standard academy attire, lightweight but well-worn. 3. Arcane Tome: A well-thumbed book titled \"Aether and Elemental Conjuring\". It contains useful information on elemental magic. 4. Leather Pouch: Contains a handful of gold coins, some dried herbs, and a piece of chalk for arcane rituals."
   }
   line {
     speaker: "Player"
-    text: "enter cave"
+    text: "leave the room"
   }
   line {
     speaker: "Game"
-    text: "You enter the dark cave. You can't see a thing in here."
-  }
-  line {
-    speaker: "Player"
-    text: "light lantern"
-  }
-  line {
-    speaker: "Game"
-    text: "In the flickering light of the lantern, you can see your surroundings now. There is a passage to the north, and a narrow one going west."
-  }
-  line {
-    speaker: "Player"
-    text: "west"
-  }
-  line {
-    speaker: "Game"
-    text: "You can't fit through the narrow passage."
+    text: "You gather your belongings, secure your Hearthstone, and step out of your chamber. The academy's halls are dimly lit at this hour, but the moonlight from the open archways illuminates your way. The quiet is comforting, but a feeling of uncertainty lingers. Your journey is just beginning."
   }
 }

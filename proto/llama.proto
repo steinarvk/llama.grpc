@@ -27,6 +27,9 @@ message ModelInfo {
 }
 
 message TokenizeRequest {
+    ModelInfo model_info = 2;
+    SessionHint session_hint = 3;
+
     string text = 1;
 }
 
