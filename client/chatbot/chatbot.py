@@ -291,11 +291,12 @@ def format_suitable_prompt(scenario, target_context_size, count_tokens):
     return prompt
 
 class ConversationChunk:
-    def __init__(self, text: str, tokens: list[int], speaker: str | None):
+    def __init__(self, text: str, tokens: list[int], speaker: str | None, ignored: bool = False, stripped_text: str | None = None):
         self.text = text
         self.tokens = tokens
         self.speaker = speaker
-        self.ignored = False
+        self.ignored = ignored
+        self.stripped_text = stripped_text or text
     
     def __repr__(self):
         return f"ConversationChunk(text={repr(self.text)}, tokens={repr(self.tokens)}, speaker={repr(self.speaker)}, ignored={repr(self.ignored)})"
@@ -342,6 +343,9 @@ class ConversationState:
         for chunk in self.chunks:
             if not chunk.ignored:
                 sys.stdout.write(chunk.text)
+    
+    def proto_lines(self, exclude_ignored: bool = True):
+        return [chatbot_pb2.Line(speaker=chunk.speaker.name, text=chunk.stripped_text) for chunk in self.chunks if not (exclude_ignored and chunk.ignored)]
 
 
 def main(argv):
@@ -386,6 +390,7 @@ def main(argv):
         tok = [token.token_id for token in stub.Tokenize(llama_pb2.TokenizeRequest(text=formatted_line)).token]
         convo.add_chunk(ConversationChunk(
             text=formatted_line,
+            stripped_text=text,
             speaker=speaker.name,
             tokens=tok,
         ))
@@ -429,18 +434,23 @@ def main(argv):
 
         tok = [token.token_id for token in stub.Tokenize(llama_pb2.TokenizeRequest(text=formatted_line)).token]
 
+        return ConversationChunk(
+            text=formatted_line,
+            stripped_text=text,
+            speaker=speaker.name,
+            tokens=tok,
+        )
+    
+    def sync_scenario():
+        prompt_tokens[:] = convo.get_tokens()
+        scenario.setup.line[:] = convo.proto_lines(exclude_ignored=False)
+
         if FLAGS.output_transcript:
             value = text_format.MessageToString(scenario)
             tmp = f"{FLAGS.output_transcript}.tmp"
             with open(tmp, "w") as f:
                 f.write(value)
             shutil.move(tmp, FLAGS.output_transcript)
-
-        return ConversationChunk(
-            text=formatted_line,
-            speaker=speaker.name,
-            tokens=tok,
-        )
 
     def predict_with_extra_tokens(extra_tokens):
         subreq = llama_pb2.DoPredictRequest()
@@ -474,13 +484,14 @@ def main(argv):
                         new_speaker = chatbot_pb2.Speaker(name=speaker_name)
                         fixed_speakers = parse_speakers([new_speaker])
                         speakers.update(fixed_speakers)
+                        scenario.setup.context.speaker.append(new_speaker)
                         print(fixed_speakers)
                     case Command(cmd, _):
                         print(f"Unknown command: {cmd}")
                     case _:
                         sys.stdout.write("???\n")
         sys.stdout.flush()
-        prompt_tokens[:] = convo.get_tokens()
+        sync_scenario()
 
         sys.stdout.write("...\n")
         sys.stdout.flush()
@@ -494,7 +505,7 @@ def main(argv):
         sys.stdout.flush()
 
         convo.add_chunk(add_line(chosen_speaker, output_line))
-        prompt_tokens[:] = convo.get_tokens()
+        sync_scenario()
 
         current_context_size = len(prompt_tokens)
 
