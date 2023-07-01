@@ -11,7 +11,8 @@ import sys
 import random
 
 FLAGS = flags.FLAGS
-flags.DEFINE_float("temperature", 0.5, "Temperature for token generation")
+flags.DEFINE_string("server", "localhost:50051", "Address of server to connect to.")
+flags.DEFINE_float("temperature", 1.0, "Temperature for token generation")
 flags.DEFINE_string("model_name", "65B/ggml-model-q4_0", "Model to use")
 
 def choose_softmax(logits, temperature=0.5):
@@ -27,7 +28,7 @@ def choose_softmax(logits, temperature=0.5):
 def main(argv):
     del argv
 
-    with grpc.insecure_channel("localhost:50051") as channel:
+    with grpc.insecure_channel(FLAGS.server) as channel:
         stub = llama_pb2_grpc.LlamaServiceStub(channel)
 
         prompt = sys.stdin.read()
