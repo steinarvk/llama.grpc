@@ -1,0 +1,27 @@
+Below, each first name is annotated with what gender it is commonly associated with.
+
+
+Patrick
+male
+
+Sarah
+female
+
+Indira
+female
+
+Lawrence
+male
+
+Pat
+unknown
+
+Jenny
+female
+
+Michael
+male
+
+Anna
+female
+
