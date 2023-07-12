@@ -24,13 +24,7 @@ message SessionInfo {
 
 message ModelInfo {
     string model_name = 1;
-}
-
-message TokenizeRequest {
-    ModelInfo model_info = 2;
-    SessionHint session_hint = 3;
-
-    string text = 1;
+    uint32 context_size = 2;
 }
 
 message Token {
@@ -52,10 +46,6 @@ message InputTokens {
         string str = 1;
         InputTokenSequence token_ids = 2;
     }
-}
-
-message TokenizeResponse {
-    repeated Token token = 1;
 }
 
 message GetVocabularyRequest {
@@ -137,6 +127,17 @@ message LogitProcessing {
 
 message SessionHint {
     string session_id = 1;
+}
+
+message TokenizeRequest {
+    ModelInfo model_info = 2;
+    SessionHint session_hint = 3;
+
+    string text = 1;
+}
+
+message TokenizeResponse {
+    repeated Token token = 1;
 }
 
 message DoPredictRequest {
