@@ -14,6 +14,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("server", "localhost:50051", "Address of server to connect to.")
 flags.DEFINE_float("temperature", 1.0, "Temperature for token generation")
 flags.DEFINE_string("model_name", "65B/ggml-model-q4_0", "Model to use")
+flags.DEFINE_integer("max_tokens", 0, "Number of tokens to stop after")
 
 def choose_softmax(logits, temperature=0.5):
     choices = [(math.exp(logit.logit / temperature), logit.token) for logit in logits]
@@ -39,6 +40,10 @@ def main(argv):
         req.logit_processing.top_n = 40
         req.logit_processing.llama_repetition_penalty.intensity = 1.1
 
+        max_tokens = FLAGS.max_tokens
+        if max_tokens == 0:
+            max_tokens = 100000
+
         def step():
             response = stub.DoPredict(req)
             req.session_hint.session_id = response.session_info.session_id
@@ -55,8 +60,9 @@ def main(argv):
 
             return True
 
-        while step():
-            pass
+        for _ in range(max_tokens):
+            if not step():
+                break
 
 if __name__ == '__main__':
   app.run(main)
