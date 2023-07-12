@@ -75,11 +75,12 @@ def format_initial_prompt(scenario, size=None):
 
     size = size if size is not None else max_prompt_size(scenario)
 
-    def show_record(record, end_chat_marker, show_only=None):
+    def show_record(record, end_chat_marker, show_only=None, always_show=False, always_dotdotdot=False):
         speakers = parse_speakers(record.context.speaker)
 
         if (show_only is not None) and (show_only <= 0):
-            return
+            if not always_show:
+                return
         lines = []
         linesets.append(lines)
         lines.append(f"=== NEW CHAT ===")
@@ -87,9 +88,11 @@ def format_initial_prompt(scenario, size=None):
             lines.append("")
             lines.append(record.context.description)
         lines.append("")
+
         omit = max(0, len(record.line) - show_only if show_only is not None else 0)
-        if omit:
+        if omit or always_dotdotdot:
             lines.append("...")
+
         for i, line in enumerate(record.line):
             if i < omit:
                 continue
@@ -103,7 +106,7 @@ def format_initial_prompt(scenario, size=None):
     
     remaining = size
 
-    show_record(scenario.setup, end_chat_marker=False, show_only=remaining)
+    show_record(scenario.setup, end_chat_marker=False, show_only=remaining, always_show=True, always_dotdotdot=True)
     remaining -= len(scenario.setup.line)
 
     for example in reversed(scenario.example):
@@ -407,8 +410,10 @@ def main(argv):
     def count_tokens(s):
         return len(tokenize(s))
 
+    logging.info(f"Beginning to tokenize")
     min_size = 2
     max_size = max_prompt_size(scenario)
+    logging.info(f"Want prompt between {min_size} and {max_size}")
 
     max_context_size = 2048
     max_fixed_prompt_size = max_context_size // 3
@@ -418,10 +423,15 @@ def main(argv):
     scenario_without_chat.setup.line.clear()
 
     prompt = format_suitable_prompt(scenario_without_chat, max_fixed_prompt_size, count_tokens)
+
+    logging.info("Generated fixed prompt: %s", prompt)
+
     BOS = 1
     prompt_tokens = [BOS] + [token.token_id for token in tokenize(prompt)]
 
     speakers = parse_speakers(scenario.setup.context.speaker)
+
+    print("Fixed prompt: " + prompt, file=sys.stderr)
 
     convo = ConversationState(fixed_prompt=ConversationChunk(prompt, list(prompt_tokens), speaker=None))
     for line in scenario.setup.line:
@@ -447,7 +457,7 @@ def main(argv):
 
     req = llama_pb2.DoPredictRequest()
     req.model_info.model_name = FLAGS.model_name
-    req.logit_processing.top_n = 40
+    req.logit_processing.top_n = 400
     req.logit_processing.llama_repetition_penalty.intensity = 1.1
 
     convo.limit_context_size(target_context_size)
@@ -546,7 +556,7 @@ def main(argv):
     while True:
         bot_speakers = {speaker.name: speaker for speaker in speakers.values() if not speaker.human}
         human_speakers = [speaker for speaker in speakers.values() if speaker.human]
-        assert len(human_speakers) <= 1
+        # assert len(human_speakers) <= 1
 
         input_tokens = []
         if human_speakers:
